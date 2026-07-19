@@ -1,0 +1,895 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Minor OT - Firebase</title>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-firestore.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:system-ui,-apple-system,sans-serif;background:#eff6ff;padding:8px}
+.container{max-width:1024px;margin:0 auto}
+.card{background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,0.1);padding:12px;margin-bottom:12px}
+.header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px}
+.title{font-size:20px;font-weight:700;color:#2563eb}
+.date{font-size:12px;color:#6b7280}
+.status-indicator{display:flex;align-items:center;gap:4px;font-size:11px;font-weight:700;padding:4px 8px;border-radius:6px}
+.status-online{background:#dcfce7;color:#166534}
+.status-syncing{background:#fef3c7;color:#92400e}
+.status-offline{background:#fee2e2;color:#991b1b}
+.btn{padding:6px 12px;border:none;border-radius:8px;font-weight:700;cursor:pointer;font-size:12px}
+.btn-red{background:#ef4444;color:#fff}
+.btn-blue{background:#3b82f6;color:#fff}
+.btn-green{background:#22c55e;color:#fff}
+.btn-purple{background:#a855f7;color:#fff}
+.btn-yellow{background:#eab308;color:#fff}
+.btn-gray{background:#f3f4f6;color:#1f2937}
+.btn-orange{background:#f97316;color:#fff}
+.btn:disabled{background:#e5e7eb;color:#9ca3af;cursor:not-allowed}
+.tabs{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+.stats{display:grid;grid-template-columns:repeat(5,1fr);gap:6px}
+.stat{padding:6px;border-radius:8px;text-align:center;border:1px solid}
+.stat-value{font-size:18px;font-weight:700}
+.stat-label{font-size:11px;font-weight:500}
+.stat-blue{background:#dbeafe;border-color:#bfdbfe;color:#1e40af}
+.stat-yellow{background:#fef3c7;border-color:#fde68a;color:#92400e}
+.stat-green{background:#d1fae5;border-color:#a7f3d0;color:#065f46}
+.stat-purple{background:#e9d5ff;border-color:#d8b4fe;color:#6b21a8}
+.stat-gray{background:#f3f4f6;border-color:#e5e7eb;color:#374151}
+.form-group{margin-bottom:12px}
+.form-input{width:100%;padding:8px;border:2px solid #d1d5db;border-radius:8px;font-size:14px}
+.form-input:focus{outline:none;border-color:#3b82f6}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+.grid-4{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px}
+.patient-card{background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,0.1);padding:12px;margin-bottom:12px}
+.token{display:inline-block;padding:4px 12px;border-radius:8px;font-size:20px;font-weight:900;color:#fff}
+.token-urgent{background:#ef4444}
+.token-routine{background:#22c55e}
+.token-big{font-size:32px;padding:12px 24px;border-radius:16px;background:linear-gradient(to right,#4ade80,#3b82f6)}
+.status-badge{display:inline-block;padding:4px 8px;border-radius:6px;font-size:11px;font-weight:700;color:#fff}
+.status-registered{background:#eab308}
+.status-ready{background:#22c55e}
+.status-in-progress{background:#a855f7}
+.status-completed{background:#6b7280}
+.checklist{background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:8px}
+.checklist-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.checklist-title{font-size:12px;font-weight:700}
+.checklist-count{font-size:11px;font-weight:700;padding:2px 8px;border-radius:6px;color:#fff}
+.checklist-items{display:grid;grid-template-columns:1fr 1fr;gap:4px}
+.checklist-item{display:flex;align-items:center;gap:4px;padding:4px;background:#fff;border-radius:6px;font-size:12px}
+.checkbox{width:12px;height:12px}
+.postop-checklist{background:#faf5ff;border:1px solid #d8b4fe}
+.text-red{color:#dc2626}
+.text-xs{font-size:11px}
+.text-sm{font-size:12px}
+.font-bold{font-weight:700}
+.mb-2{margin-bottom:8px}
+.mb-3{margin-bottom:12px}
+.flex{display:flex}
+.items-center{align-items:center}
+.justify-between{justify-content:space-between}
+.gap-2{gap:8px}
+.w-full{width:100%}
+.text-center{text-align:center}
+.bg-blue-50{background:#eff6ff}
+.bg-red-50{background:#fef2f2}
+.border-blue{border:2px solid #bfdbfe}
+.border-red{border:2px solid #fecaca}
+.p-3{padding:12px}
+.rounded{border-radius:8px}
+.queue-section{background:#fef3c7;border:2px solid #fbbf24;border-radius:12px;padding:12px;margin-top:16px}
+.queue-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+.queue-title{font-size:16px;font-weight:700;color:#92400e}
+.queue-item{background:#fff;border-radius:8px;padding:8px;margin-bottom:8px;border-left:4px solid #eab308}
+.queue-empty{text-align:center;padding:24px;color:#6b7280}
+.export-section{background:#f0fdf4;border:2px solid #86efac;border-radius:12px;padding:12px;margin-bottom:12px}
+.action-buttons{display:flex;gap:4px;align-items:center}
+.modal{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:1000;padding:16px}
+.modal-content{background:#fff;border-radius:16px;padding:20px;max-width:500px;width:100%;max-height:90vh;overflow-y:auto}
+.modal-header{font-size:18px;font-weight:700;margin-bottom:16px}
+.loading{display:flex;align-items:center;gap:6px;font-size:12px;color:#6b7280}
+.spinner{display:inline-block;width:12px;height:12px;border:2px solid #e5e7eb;border-top-color:#3b82f6;border-radius:50%;animation:spin 0.6s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useEffect}=React;
+
+// Firebase initialization will happen here
+let db;
+let initialized=false;
+let unsubscribe=null;
+let connectionStateUnsubscribe=null;
+
+async function initializeFirebase(){
+  if(initialized)return;
+  
+  try{
+    // Dynamically import firebase-config
+    const configScript=document.createElement('script');
+    configScript.src='firebase-config.js';
+    configScript.onload=()=>{
+      firebase.initializeApp(firebaseConfig);
+      db=firebase.firestore();
+      
+      // Enable offline persistence
+      db.enablePersistence().catch(err=>{
+        if(err.code==='failed-precondition'){
+          console.log('Multiple tabs open');
+        }else if(err.code==='unimplemented'){
+          console.log('Offline persistence not supported');
+        }
+      });
+      
+      initialized=true;
+    };
+    document.head.appendChild(configScript);
+  }catch(e){
+    console.error('Firebase init error:',e);
+  }
+}
+
+const getDate=()=>{
+  const d=new Date();
+  return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+};
+
+function App(){
+  const[patients,setPatients]=useState([]);
+  const[tab,setTab]=useState('reg');
+  const[step,setStep]=useState(1);
+  const[form,setForm]=useState({name:'',age:'',sex:'M',opd:'',diagnosis:'',procedure:'',isSeptic:false,fever:false,bleeding:false,pain:false,shock:false});
+  const[curr,setCurr]=useState(null);
+  const[editingPatient,setEditingPatient]=useState(null);
+  const[firebaseReady,setFirebaseReady]=useState(false);
+  const[connectionState,setConnectionState]=useState('syncing');
+  const[loading,setLoading]=useState(false);
+
+  // Initialize Firebase
+  useEffect(()=>{
+    initializeFirebase();
+    const checkInterval=setInterval(()=>{
+      if(initialized&&db){
+        setFirebaseReady(true);
+        clearInterval(checkInterval);
+        
+        // Listen to connection state
+        connectionStateUnsubscribe=firebase.firestore().collection('_internal').doc('_connection_state').onSnapshot(
+          doc=>{
+            if(doc.exists&&doc.data().connected){
+              setConnectionState('online');
+            }
+          },
+          ()=>{
+            setConnectionState('offline');
+          }
+        );
+        
+        // Set up real-time listener for today's patients
+        const today=getDate();
+        unsubscribe=db.collection('minorOT').doc(today).collection('patients').orderBy('time','desc').onSnapshot(
+          snapshot=>{
+            const data=[];
+            snapshot.forEach(doc=>{
+              data.push({...doc.data(),docId:doc.id});
+            });
+            setPatients(data);
+            setConnectionState('online');
+          },
+          error=>{
+            console.log('Listener error:',error);
+            setConnectionState('offline');
+          }
+        );
+      }
+    },500);
+    
+    return ()=>{
+      clearInterval(checkInterval);
+      if(unsubscribe)unsubscribe();
+      if(connectionStateUnsubscribe)connectionStateUnsubscribe();
+    };
+  },[]);
+
+  // Auto-reset daily
+  useEffect(()=>{
+    if(!firebaseReady||!db)return;
+    
+    const checkDailyReset=async()=>{
+      const today=getDate();
+      const settingsRef=db.collection('minorOT').doc(today).collection('settings').doc('reset');
+      
+      try{
+        const doc=await settingsRef.get();
+        if(!doc.exists){
+          // First time today, reset everything
+          const yesterday=new Date();
+          yesterday.setDate(yesterday.getDate()-1);
+          const yesterdayStr=yesterday.getFullYear()+'-'+String(yesterday.getMonth()+1).padStart(2,'0')+'-'+String(yesterday.getDate()).padStart(2,'0');
+          
+          await settingsRef.set({timestamp:new Date(),date:today});
+        }
+      }catch(e){
+        console.log('Reset check error:',e);
+      }
+    };
+    
+    checkDailyReset();
+  },[firebaseReady]);
+
+  const genTokenFirestore=async(isSeptic)=>{
+    if(!db)return{token:'ERROR',priority:'routine'};
+    
+    const today=getDate();
+    const docRef=db.collection('minorOT').doc(today).collection('counters').doc(isSeptic?'dressing':'ot');
+    
+    try{
+      const result=await db.runTransaction(async(transaction)=>{
+        const doc=await transaction.get(docRef);
+        const count=(doc.exists?doc.data().count:0)+1;
+        
+        transaction.set(docRef,{count,lastUpdate:new Date()});
+        
+        return count;
+      });
+      
+      const prefix=isSeptic?'D':'OT';
+      return{
+        token:`${prefix}-${String(result).padStart(3,'0')}`,
+        priority:'routine'
+      };
+    }catch(e){
+      console.error('Token generation error:',e);
+      return{token:'ERROR',priority:'routine'};
+    }
+  };
+
+  const next1=()=>{
+    if(!form.name||!form.age||!form.opd||!form.diagnosis||!form.procedure){
+      alert('Fill all fields');
+      return;
+    }
+    setStep(2);
+  };
+
+  const next2=async()=>{
+    const hasRedFlags=form.fever||form.bleeding||form.pain||form.shock;
+    const{token,priority}=await genTokenFirestore(form.isSeptic);
+    const room=form.isSeptic?'Dressing':`Minor OT ${(patients.filter(p=>!p.isSeptic).length%3)+1}`;
+    
+    setCurr({
+      id:Date.now(),
+      ...form,
+      token,
+      priority,
+      room,
+      status:'registered',
+      time:new Date().toISOString(),
+      preOp:{allergies:false,tt:false,testDose:false,attender:false,ornaments:false,consent:false},
+      postOp:{otNotes:false,hpe:false,pusCulture:false,prescription:false},
+      end:null
+    });
+    setStep(3);
+  };
+
+  const confirm=async()=>{
+    if(!firebaseReady||!db){
+      alert('Firebase not ready');
+      return;
+    }
+    
+    setLoading(true);
+    try{
+      const today=getDate();
+      const docRef=db.collection('minorOT').doc(today).collection('patients').doc(String(curr.id));
+      await docRef.set(curr);
+      
+      setForm({name:'',age:'',sex:'M',opd:'',diagnosis:'',procedure:'',isSeptic:false,fever:false,bleeding:false,pain:false,shock:false});
+      setCurr(null);
+      setStep(1);
+    }catch(e){
+      alert('Error saving patient: '+e.message);
+    }finally{
+      setLoading(false);
+    }
+  };
+
+  const updatePreOp=async(docId,key,value)=>{
+    if(!db)return;
+    
+    const today=getDate();
+    const docRef=db.collection('minorOT').doc(today).collection('patients').doc(docId);
+    
+    try{
+      const doc=await docRef.get();
+      const preOp={...doc.data().preOp,[key]:value};
+      const allChecked=Object.values(preOp).every(x=>x);
+      
+      await docRef.update({
+        preOp,
+        status:allChecked&&doc.data().status==='registered'?'ready':doc.data().status
+      });
+    }catch(e){
+      console.error('Update error:',e);
+    }
+  };
+
+  const updatePostOp=async(docId,key,value)=>{
+    if(!db)return;
+    
+    const today=getDate();
+    const docRef=db.collection('minorOT').doc(today).collection('patients').doc(docId);
+    
+    try{
+      await docRef.update({
+        postOp:{
+          ...patients.find(p=>p.docId===docId).postOp,
+          [key]:value
+        }
+      });
+    }catch(e){
+      console.error('Update error:',e);
+    }
+  };
+
+  const updateStatus=async(docId,newStatus)=>{
+    if(!db)return;
+    
+    const today=getDate();
+    const docRef=db.collection('minorOT').doc(today).collection('patients').doc(docId);
+    
+    try{
+      const updateData={status:newStatus};
+      if(newStatus==='completed'){
+        updateData.end=new Date().toISOString();
+      }
+      await docRef.update(updateData);
+    }catch(e){
+      console.error('Status update error:',e);
+    }
+  };
+
+  const deletePatient=async(docId)=>{
+    if(!window.confirm('Delete this patient?'))return;
+    
+    if(!db)return;
+    
+    const today=getDate();
+    const docRef=db.collection('minorOT').doc(today).collection('patients').doc(docId);
+    
+    try{
+      await docRef.delete();
+    }catch(e){
+      console.error('Delete error:',e);
+    }
+  };
+
+  const editPatient=(p)=>{
+    setEditingPatient({...p});
+  };
+
+  const saveEdit=async()=>{
+    if(!editingPatient.name||!editingPatient.age||!editingPatient.opd||!editingPatient.diagnosis||!editingPatient.procedure){
+      alert('Fill all fields');
+      return;
+    }
+    
+    if(!db)return;
+    
+    setLoading(true);
+    try{
+      const today=getDate();
+      const docRef=db.collection('minorOT').doc(today).collection('patients').doc(editingPatient.docId);
+      
+      const{docId,...updateData}=editingPatient;
+      await docRef.update(updateData);
+      
+      setEditingPatient(null);
+    }catch(e){
+      alert('Error saving: '+e.message);
+    }finally{
+      setLoading(false);
+    }
+  };
+
+  const exportSingleReg=(p)=>{
+    const flags=[p.fever&&'Fever',p.bleeding&&'Bleeding',p.pain&&'Severe Pain',p.shock&&'Shock'].filter(Boolean).join(', ')||'None';
+    const msg=`🏥 MINOR OT REGISTRATION
+
+📋 Token: *${p.token}*
+Name: ${p.name}
+Age/Sex: ${p.age}/${p.sex}
+OPD: ${p.opd}
+Diagnosis: ${p.diagnosis}
+Procedure: ${p.procedure}
+
+🔍 Type: ${p.isSeptic?'🔴 SEPTIC':'🟢 NON-SEPTIC'}
+Room: ${p.room}
+Priority: ${p.priority.toUpperCase()}
+Red Flags: ${flags}
+
+⏰ ${new Date(p.time).toLocaleString()}`;
+    window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`,'_blank');
+  };
+
+  const exportRegQueue=()=>{
+    const regQueue=patients.filter(p=>p.status==='registered').sort((a,b)=>new Date(a.time)-new Date(b.time));
+    if(regQueue.length===0){
+      alert('No registered patients');
+      return;
+    }
+    
+    let msg='🏥 REGISTRATION QUEUE\n\n';
+    regQueue.forEach(p=>{
+      const flags=[p.fever&&'🔴 Fever',p.bleeding&&'🔴 Bleeding',p.pain&&'🔴 Pain',p.shock&&'🔴 Shock'].filter(Boolean).join(' ')||'✅ Stable';
+      msg+=`${p.token} • ${p.name} (${p.age}/${p.sex}) • ${p.room}\nFlags: ${flags}\n\n`;
+    });
+    window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`,'_blank');
+  };
+
+  const exportQueue=()=>{
+    const queue=patients.filter(p=>['ready','in-progress'].includes(p.status)).sort((a,b)=>new Date(a.time)-new Date(b.time));
+    if(queue.length===0){
+      alert('Queue is empty');
+      return;
+    }
+    
+    let msg='📋 LIVE QUEUE\n\n';
+    queue.forEach(p=>{
+      const status=p.status==='ready'?'✅ READY':'🔄 IN PROGRESS';
+      msg+=`${p.token} • ${p.name} (${p.age}/${p.sex}) • ${status}\nRoom: ${p.room}\n\n`;
+    });
+    msg+='⏰ Updated: '+new Date().toLocaleString();
+    window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`,'_blank');
+  };
+
+  const exportDayCensus=()=>{
+    if(patients.length===0){
+      alert('No patients today');
+      return;
+    }
+    
+    const completed=patients.filter(p=>p.status==='completed');
+    const ongoing=patients.filter(p=>p.status==='in-progress');
+    const septic=patients.filter(p=>p.isSeptic);
+    
+    let msg='📊 DAILY CENSUS\n\n';
+    msg+=`Total Patients: ${patients.length}\n`;
+    msg+=`Completed: ${completed.length}\n`;
+    msg+=`Ongoing: ${ongoing.length}\n`;
+    msg+=`Registered: ${patients.filter(p=>p.status==='registered').length}\n`;
+    msg+=`Ready: ${patients.filter(p=>p.status==='ready').length}\n\n`;
+    
+    msg+=`SEPTIC CASES: ${septic.length}\n\n`;
+    
+    msg+='CASE LIST:\n';
+    patients.forEach(p=>{
+      msg+=`${p.token} | ${p.name} | ${p.diagnosis} → ${p.procedure}\n`;
+    });
+    
+    msg+=`\n⏰ ${new Date().toLocaleString()}`;
+    window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`,'_blank');
+  };
+
+  const clearAllData=async()=>{
+    if(!window.confirm('⚠️ CLEAR ALL DATA?\\n\\nThis will delete ALL patients and reset everything. This cannot be undone!'))return;
+    
+    if(!db)return;
+    
+    setLoading(true);
+    try{
+      const today=getDate();
+      const snapshot=await db.collection('minorOT').doc(today).collection('patients').get();
+      const batch=db.batch();
+      
+      snapshot.forEach(doc=>{
+        batch.delete(doc.ref);
+      });
+      
+      await batch.commit();
+      alert('All data cleared successfully!');
+    }catch(e){
+      alert('Error clearing data: '+e.message);
+    }finally{
+      setLoading(false);
+    }
+  };
+
+  const statusIndicator=(
+    <div className={`status-indicator status-${connectionState}`}>
+      {connectionState==='online'&&<span>🟢 Online</span>}
+      {connectionState==='syncing'&&<span><span className="spinner"></span>Syncing</span>}
+      {connectionState==='offline'&&<span>🔴 Offline</span>}
+    </div>
+  );
+
+  if(!firebaseReady){
+    return(
+      <div className="container" style={{textAlign:'center',paddingTop:'40px'}}>
+        <div className="loading">
+          <span className="spinner"></span>
+          Initializing Firebase...
+        </div>
+      </div>
+    );
+  }
+
+  const septic=patients.filter(p=>p.isSeptic).length;
+  const nonSeptic=patients.filter(p=>!p.isSeptic).length;
+  const ready=patients.filter(p=>p.status==='ready').length;
+  const inProgress=patients.filter(p=>p.status==='in-progress').length;
+  const completed=patients.filter(p=>p.status==='completed').length;
+
+  return(
+    <div className="container">
+      <div className="card">
+        <div className="header">
+          <div>
+            <div className="title">🏥 Minor OT Manager</div>
+            <div className="date" style={{marginTop:'4px'}}>{getDate()}</div>
+          </div>
+          {statusIndicator}
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="stats">
+          <div className="stat stat-blue"><div className="stat-value">{patients.length}</div><div className="stat-label">Total</div></div>
+          <div className="stat stat-yellow"><div className="stat-value">{patients.filter(p=>p.status==='registered').length}</div><div className="stat-label">Registered</div></div>
+          <div className="stat stat-green"><div className="stat-value">{ready}</div><div className="stat-label">Ready</div></div>
+          <div className="stat stat-purple"><div className="stat-value">{inProgress}</div><div className="stat-label">In Progress</div></div>
+          <div className="stat stat-gray"><div className="stat-value">{completed}</div><div className="stat-label">Completed</div></div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="tabs">
+          <button onClick={()=>setTab('reg')} className={`btn ${tab==='reg'?'btn-blue':'btn-gray'}`}>📝 Register</button>
+          <button onClick={()=>setTab('queue')} className={`btn ${tab==='queue'?'btn-blue':'btn-gray'}`}>📋 Queue</button>
+          <button onClick={()=>setTab('preop')} className={`btn ${tab==='preop'?'btn-blue':'btn-gray'}`}>✅ Pre-Op</button>
+          <button onClick={()=>setTab('postop')} className={`btn ${tab==='postop'?'btn-blue':'btn-gray'}`}>🎯 Post-Op</button>
+          <button onClick={()=>setTab('stats')} className={`btn ${tab==='stats'?'btn-blue':'btn-gray'}`}>📊 Stats</button>
+          <button onClick={clearAllData} disabled={loading} className="btn btn-red">🗑️ Clear All</button>
+        </div>
+      </div>
+
+      {step===1&&tab==='reg'&&<div className="card">
+        <div style={{marginBottom:'16px',fontWeight:'700',fontSize:'14px'}}>Step 1: Basic Info</div>
+        <div className="form-group">
+          <label className="text-sm font-bold" style={{display:'block',marginBottom:'4px'}}>Patient Name *</label>
+          <input type="text" value={form.name} onChange={e=>setForm({...form,name:e.target.value})} placeholder="Full name" className="form-input"/>
+        </div>
+        <div className="grid-3 mb-3">
+          <div>
+            <label className="text-sm font-bold" style={{display:'block',marginBottom:'4px'}}>Age *</label>
+            <input type="number" value={form.age} onChange={e=>setForm({...form,age:e.target.value})} placeholder="Age" className="form-input"/>
+          </div>
+          <div>
+            <label className="text-sm font-bold" style={{display:'block',marginBottom:'4px'}}>Sex</label>
+            <select value={form.sex} onChange={e=>setForm({...form,sex:e.target.value})} className="form-input">
+              <option value="M">Male</option><option value="F">Female</option><option value="O">Other</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-sm font-bold" style={{display:'block',marginBottom:'4px'}}>OPD *</label>
+            <input type="text" value={form.opd} onChange={e=>setForm({...form,opd:e.target.value})} placeholder="OPD" className="form-input"/>
+          </div>
+        </div>
+        <div className="form-group">
+          <label className="text-sm font-bold" style={{display:'block',marginBottom:'4px'}}>Diagnosis *</label>
+          <input type="text" value={form.diagnosis} onChange={e=>setForm({...form,diagnosis:e.target.value})} placeholder="Diagnosis" className="form-input"/>
+        </div>
+        <div className="form-group">
+          <label className="text-sm font-bold" style={{display:'block',marginBottom:'4px'}}>Procedure *</label>
+          <input type="text" value={form.procedure} onChange={e=>setForm({...form,procedure:e.target.value})} placeholder="Procedure" className="form-input"/>
+        </div>
+        <button onClick={next1} className="btn btn-blue" style={{width:'100%',marginTop:'8px'}}>Next →</button>
+      </div>}
+
+      {step===2&&tab==='reg'&&<div className="card">
+        <div style={{marginBottom:'16px',fontWeight:'700',fontSize:'14px'}}>Step 2: Red Flags & Type</div>
+        <div className="form-group">
+          <label className="text-sm font-bold" style={{display:'block',marginBottom:'8px'}}>Red Flags (if any)</label>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'8px'}}>
+            {[{k:'fever',l:'🌡️ Fever'},{k:'bleeding',l:'🩸 Bleeding'},{k:'pain',l:'😣 Severe Pain'},{k:'shock',l:'⚡ Shock'}].map(f=>
+              <label key={f.k} className="flex items-center gap-2" style={{padding:'8px',background:'#f3f4f6',borderRadius:'6px',cursor:'pointer'}}>
+                <input type="checkbox" checked={form[f.k]} onChange={e=>setForm({...form,[f.k]:e.target.checked})} className="checkbox"/>
+                <span className="text-sm">{f.l}</span>
+              </label>
+            )}
+          </div>
+        </div>
+        <div className="form-group" style={{marginTop:'16px'}}>
+          <label className="text-sm font-bold" style={{display:'block',marginBottom:'8px'}}>Case Type</label>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'8px'}}>
+            <button onClick={()=>setForm({...form,isSeptic:false})} className={`btn ${!form.isSeptic?'btn-green':'btn-gray'}`} style={{padding:'12px',fontSize:'14px'}}>🟢 Non-Septic (OT)</button>
+            <button onClick={()=>setForm({...form,isSeptic:true})} className={`btn ${form.isSeptic?'btn-red':'btn-gray'}`} style={{padding:'12px',fontSize:'14px'}}>🔴 Septic (Dressing)</button>
+          </div>
+        </div>
+        <div className="grid-2" style={{marginTop:'16px',gap:'8px'}}>
+          <button onClick={()=>setStep(1)} className="btn btn-gray">← Back</button>
+          <button onClick={next2} className="btn btn-blue">Generate Token →</button>
+        </div>
+      </div>}
+
+      {step===3&&tab==='reg'&&curr&&<div className="card">
+        <div style={{marginBottom:'16px',fontWeight:'700',fontSize:'14px'}}>Step 3: Confirm Registration</div>
+        <div className="token-big" style={{textAlign:'center',marginBottom:'12px'}}>{curr.token}</div>
+        <div style={{background:'#eff6ff',padding:'12px',borderRadius:'8px',marginBottom:'12px',fontSize:'13px',lineHeight:'1.6'}}>
+          <div><span style={{fontWeight:'700'}}>Name:</span> {curr.name}</div>
+          <div><span style={{fontWeight:'700'}}>Age/Sex:</span> {curr.age}/{curr.sex}</div>
+          <div><span style={{fontWeight:'700'}}>OPD:</span> {curr.opd}</div>
+          <div><span style={{fontWeight:'700'}}>Diagnosis:</span> {curr.diagnosis}</div>
+          <div><span style={{fontWeight:'700'}}>Procedure:</span> {curr.procedure}</div>
+          <div><span style={{fontWeight:'700'}}>Type:</span> {curr.isSeptic?'🔴 SEPTIC':'🟢 NON-SEPTIC'}</div>
+          <div><span style={{fontWeight:'700'}}>Room:</span> {curr.room}</div>
+        </div>
+        <div className="grid-3" style={{gap:'8px'}}>
+          <button onClick={()=>{setStep(2);setCurr(null)}} className="btn btn-gray">← Back</button>
+          <button onClick={()=>{setForm({name:'',age:'',sex:'M',opd:'',diagnosis:'',procedure:'',isSeptic:false,fever:false,bleeding:false,pain:false,shock:false});setCurr(null);setStep(1)}} className="btn btn-gray">Reset</button>
+          <button onClick={confirm} disabled={loading} className="btn btn-green">{loading?'Saving...':'✅ Confirm'}</button>
+        </div>
+      </div>}
+
+      {tab==='queue'&&<div>
+        {patients.filter(p=>['registered','ready','in-progress'].includes(p.status)).length>0&&<div className="export-section">
+          <div className="flex justify-between items-center">
+            <div>
+              <div className="font-bold" style={{color:'#92400e'}}>Queue Management</div>
+              <div className="text-xs" style={{color:'#6b7280',marginTop:'2px'}}>Export queue status</div>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={exportRegQueue} className="btn btn-orange">📤 Reg Queue</button>
+              <button onClick={exportQueue} className="btn btn-yellow">📤 Live Queue</button>
+            </div>
+          </div>
+        </div>}
+        
+        {patients.filter(p=>p.status==='registered').length>0&&<div className="queue-section">
+          <div className="queue-header">
+            <div className="queue-title">📝 Registration Queue</div>
+            <div style={{fontSize:'11px',fontWeight:'700',color:'#92400e'}}>{patients.filter(p=>p.status==='registered').length} waiting</div>
+          </div>
+          {patients.filter(p=>p.status==='registered').sort((a,b)=>new Date(a.time)-new Date(b.time)).map(p=>
+            <div key={p.docId} className="queue-item">
+              <div className="flex justify-between items-center">
+                <div className="flex gap-2 items-center">
+                  <div className="token" style={{fontSize:'16px'}}>{p.token}</div>
+                  <div><div className="font-bold">{p.name}</div><div className="text-xs">{p.age}/{p.sex}</div></div>
+                </div>
+                <div className="text-xs" style={{color:'#6b7280'}}>{new Date(p.time).toLocaleTimeString()}</div>
+              </div>
+            </div>
+          )}
+        </div>}
+        
+        {patients.filter(p=>p.status==='ready').length>0&&<div className="queue-section" style={{borderColor:'#86efac',background:'#f0fdf4'}}>
+          <div className="queue-header">
+            <div className="queue-title" style={{color:'#065f46'}}>✅ Ready Queue</div>
+            <div style={{fontSize:'11px',fontWeight:'700',color:'#065f46'}}>{patients.filter(p=>p.status==='ready').length} ready</div>
+          </div>
+          {patients.filter(p=>p.status==='ready').sort((a,b)=>new Date(a.time)-new Date(b.time)).map(p=>
+            <div key={p.docId} className="queue-item" style={{borderLeftColor:'#86efac'}}>
+              <div className="flex justify-between items-center">
+                <div className="flex gap-2 items-center">
+                  <div className="token token-routine" style={{fontSize:'16px'}}>{p.token}</div>
+                  <div><div className="font-bold">{p.name}</div><div className="text-xs">{p.room}</div></div>
+                </div>
+                <button onClick={()=>updateStatus(p.docId,'in-progress')} className="btn btn-purple" style={{padding:'4px 8px',fontSize:'10px'}}>Start →</button>
+              </div>
+            </div>
+          )}
+        </div>}
+        
+        {patients.filter(p=>p.status==='in-progress').length>0&&<div className="queue-section" style={{borderColor:'#d8b4fe',background:'#faf5ff'}}>
+          <div className="queue-header">
+            <div className="queue-title" style={{color:'#6b21a8'}}>🔄 In Progress</div>
+            <div style={{fontSize:'11px',fontWeight:'700',color:'#6b21a8'}}>{patients.filter(p=>p.status==='in-progress').length} ongoing</div>
+          </div>
+          {patients.filter(p=>p.status==='in-progress').sort((a,b)=>new Date(a.time)-new Date(b.time)).map(p=>
+            <div key={p.docId} className="queue-item" style={{borderLeftColor:'#d8b4fe'}}>
+              <div className="flex justify-between items-center">
+                <div className="flex gap-2 items-center">
+                  <div className="token token-urgent" style={{fontSize:'16px'}}>{p.token}</div>
+                  <div><div className="font-bold">{p.name}</div><div className="text-xs">{p.room}</div></div>
+                </div>
+                <button onClick={()=>updateStatus(p.docId,'completed')} className="btn btn-green" style={{padding:'4px 8px',fontSize:'10px'}}>Complete</button>
+              </div>
+            </div>
+          )}
+        </div>}
+        
+        {patients.length===0&&<div className="queue-empty">No patients in queue</div>}
+      </div>}
+
+      {tab==='preop'&&<div>
+        {patients.length>0&&
+          <div className="export-section">
+            <div className="flex justify-between items-center">
+              <div>
+                <div className="font-bold" style={{color:'#065f46'}}>Pre-Op Checklist Export</div>
+                <div className="text-xs" style={{color:'#6b7280',marginTop:'2px'}}>Share pre-op summary</div>
+              </div>
+              <button onClick={exportRegQueue} className="btn btn-green">📤 WhatsApp</button>
+            </div>
+          </div>
+        }
+        {patients.map(p=>{
+          const c=Object.values(p.preOp).filter(v=>v).length;
+          const a=c===6;
+          return<div key={p.docId} className="patient-card">
+            <div className="flex justify-between mb-2">
+              <div className="flex gap-2 items-center">
+                <div className={`token ${p.priority==='urgent'?'token-urgent':'token-routine'}`}>{p.token}</div>
+                <div><div className="font-bold">{p.name}</div><div className="text-xs" style={{color:'#6b7280'}}>{p.age}/{p.sex} • {p.opd}</div></div>
+              </div>
+              <div className="action-buttons">
+                <div className={`status-badge status-${p.status}`}>{p.status.toUpperCase()}</div>
+                <button onClick={()=>editPatient(p)} className="btn btn-orange" style={{fontSize:'10px',padding:'4px 6px'}}>✏️</button>
+                <button onClick={()=>deletePatient(p.docId)} className="btn btn-red" style={{fontSize:'10px',padding:'4px 6px'}}>🗑️</button>
+              </div>
+            </div>
+            <div className="checklist">
+              <div className="checklist-header">
+                <span className="checklist-title">Pre-Op</span>
+                <span className={`checklist-count ${a?'btn-green':'btn-yellow'}`}>{c}/6</span>
+              </div>
+              <div className="checklist-items">
+                {[{k:'allergies',l:'Allergies'},{k:'tt',l:'TT'},{k:'testDose',l:'Test'},{k:'attender',l:'Attender'},{k:'ornaments',l:'Ornaments'},{k:'consent',l:'Consent'}].map(i=>
+                  <label key={i.k} className="checklist-item">
+                    <input type="checkbox" checked={p.preOp[i.k]} onChange={e=>updatePreOp(p.docId,i.k,e.target.checked)} className="checkbox"/>
+                    {i.l}
+                  </label>
+                )}
+              </div>
+            </div>
+            <div className="grid-3" style={{marginTop:'8px',gap:'4px'}}>
+              <button onClick={()=>updateStatus(p.docId,'registered')} className={`btn ${p.status==='registered'?'btn-yellow':'btn-gray'}`}>Reg</button>
+              <button onClick={()=>updateStatus(p.docId,'ready')} disabled={!a} className={`btn ${p.status==='ready'?'btn-green':a?'btn-gray':'btn-gray'}`}>Ready</button>
+              <button onClick={()=>updateStatus(p.docId,'in-progress')} disabled={!a} className={`btn ${a?'btn-purple':'btn-gray'}`}>Start</button>
+            </div>
+          </div>
+        })}
+      </div>}
+
+      {tab==='postop'&&<div>
+        {patients.length>0&&
+          <div className="export-section">
+            <div className="flex justify-between items-center">
+              <div>
+                <div className="font-bold" style={{color:'#065f46'}}>Daily Census Export</div>
+                <div className="text-xs" style={{color:'#6b7280',marginTop:'2px'}}>Complete summary of all cases</div>
+              </div>
+              <button onClick={exportDayCensus} className="btn btn-green">📤 WhatsApp</button>
+            </div>
+          </div>
+        }
+        {patients.map(p=>{
+          const po=Object.values(p.postOp).filter(v=>v).length,pc=po===4;
+          return<div key={p.docId} className="patient-card">
+            <div className="flex justify-between mb-2">
+              <div className="flex gap-2 items-center">
+                <div className={`token ${p.priority==='urgent'?'token-urgent':'token-routine'}`}>{p.token}</div>
+                <div><div className="font-bold">{p.name}</div><div className="text-xs" style={{color:'#6b7280'}}>{p.age}/{p.sex}</div></div>
+              </div>
+              <div className="action-buttons">
+                <div className={`status-badge status-${p.status}`}>{p.status.toUpperCase()}</div>
+                <button onClick={()=>editPatient(p)} className="btn btn-orange" style={{fontSize:'10px',padding:'4px 6px'}}>✏️</button>
+                <button onClick={()=>deletePatient(p.docId)} className="btn btn-red" style={{fontSize:'10px',padding:'4px 6px'}}>🗑️</button>
+              </div>
+            </div>
+            {p.status==='in-progress'&&<div className="postop-checklist checklist" style={{marginBottom:'8px'}}>
+              <div className="checklist-header">
+                <span className="checklist-title">Post-Op</span>
+                <span className={`checklist-count ${pc?'btn-purple':'btn-yellow'}`}>{po}/4</span>
+              </div>
+              <div className="checklist-items">
+                {[{k:'otNotes',l:'OT Notes'},{k:'hpe',l:'HPE'},{k:'pusCulture',l:'Culture'},{k:'prescription',l:'Rx'}].map(i=>
+                  <label key={i.k} className="checklist-item">
+                    <input type="checkbox" checked={p.postOp[i.k]} onChange={e=>updatePostOp(p.docId,i.k,e.target.checked)} className="checkbox"/>
+                    {i.l}
+                  </label>
+                )}
+              </div>
+            </div>}
+            <div className="grid-4" style={{gap:'4px'}}>
+              <button onClick={()=>updateStatus(p.docId,'registered')} className={`btn ${p.status==='registered'?'btn-yellow':'btn-gray'}`}>Reg</button>
+              <button onClick={()=>updateStatus(p.docId,'ready')} className={`btn ${p.status==='ready'?'btn-green':'btn-gray'}`}>Ready</button>
+              <button onClick={()=>updateStatus(p.docId,'in-progress')} className={`btn ${p.status==='in-progress'?'btn-purple':'btn-gray'}`}>Prog</button>
+              <button onClick={()=>updateStatus(p.docId,'completed')} disabled={!pc} className={`btn ${p.status==='completed'?'btn-gray':pc?'btn-gray':'btn-gray'}`}>Done</button>
+            </div>
+          </div>
+        })}
+      </div>}
+
+      {tab==='stats'&&<div>
+        <div className="card">
+          <div style={{marginBottom:'12px',fontWeight:'700',fontSize:'14px'}}>📊 Statistics</div>
+          <div className="grid-2" style={{gap:'8px',marginBottom:'12px'}}>
+            <div className="stat stat-blue" style={{padding:'12px'}}>
+              <div className="stat-value">{septic}</div>
+              <div className="stat-label">Septic Cases</div>
+              <div className="text-xs" style={{marginTop:'4px',color:'#1e40af'}}>Dressing Room</div>
+            </div>
+            <div className="stat stat-green" style={{padding:'12px'}}>
+              <div className="stat-value">{nonSeptic}</div>
+              <div className="stat-label">Non-Septic</div>
+              <div className="text-xs" style={{marginTop:'4px',color:'#065f46'}}>Minor OT</div>
+            </div>
+          </div>
+          <div className="grid-2" style={{gap:'8px'}}>
+            <div style={{background:'#dbeafe',padding:'12px',borderRadius:'8px',textAlign:'center',border:'1px solid #bfdbfe'}}>
+              <div style={{fontSize:'16px',fontWeight:'700',color:'#1e40af'}}>{patients.filter(p=>p.status==='completed').length}</div>
+              <div style={{fontSize:'11px',fontWeight:'500',color:'#1e40af',marginTop:'4px'}}>Completed Today</div>
+            </div>
+            <div style={{background:'#fef3c7',padding:'12px',borderRadius:'8px',textAlign:'center',border:'1px solid #fde68a'}}>
+              <div style={{fontSize:'16px',fontWeight:'700',color:'#92400e'}}>{patients.filter(p=>p.status!=='completed').length}</div>
+              <div style={{fontSize:'11px',fontWeight:'500',color:'#92400e',marginTop:'4px'}}>Pending</div>
+            </div>
+          </div>
+        </div>
+      </div>}
+
+      {editingPatient&&<div className="modal" onClick={()=>setEditingPatient(null)}>
+        <div className="modal-content" onClick={e=>e.stopPropagation()}>
+          <div className="modal-header">✏️ Edit Patient - {editingPatient.token}</div>
+          <div className="form-group">
+            <label className="text-sm font-bold" style={{display:'block',marginBottom:'4px'}}>Name</label>
+            <input type="text" value={editingPatient.name} onChange={e=>setEditingPatient({...editingPatient,name:e.target.value})} className="form-input"/>
+          </div>
+          <div className="grid-3 mb-3">
+            <div>
+              <label className="text-sm font-bold" style={{display:'block',marginBottom:'4px'}}>Age</label>
+              <input type="number" value={editingPatient.age} onChange={e=>setEditingPatient({...editingPatient,age:e.target.value})} className="form-input"/>
+            </div>
+            <div>
+              <label className="text-sm font-bold" style={{display:'block',marginBottom:'4px'}}>Sex</label>
+              <select value={editingPatient.sex} onChange={e=>setEditingPatient({...editingPatient,sex:e.target.value})} className="form-input">
+                <option value="M">Male</option><option value="F">Female</option><option value="O">Other</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-sm font-bold" style={{display:'block',marginBottom:'4px'}}>OPD</label>
+              <input type="text" value={editingPatient.opd} onChange={e=>setEditingPatient({...editingPatient,opd:e.target.value})} className="form-input"/>
+            </div>
+          </div>
+          <div className="form-group">
+            <label className="text-sm font-bold" style={{display:'block',marginBottom:'4px'}}>Diagnosis</label>
+            <input type="text" value={editingPatient.diagnosis} onChange={e=>setEditingPatient({...editingPatient,diagnosis:e.target.value})} className="form-input"/>
+          </div>
+          <div className="form-group">
+            <label className="text-sm font-bold" style={{display:'block',marginBottom:'4px'}}>Procedure</label>
+            <input type="text" value={editingPatient.procedure} onChange={e=>setEditingPatient({...editingPatient,procedure:e.target.value})} className="form-input"/>
+          </div>
+          <div className="form-group">
+            <label className="text-sm font-bold" style={{display:'block',marginBottom:'4px'}}>Red Flags</label>
+            <div className="grid-2" style={{gap:'8px'}}>
+              {[{k:'fever',l:'Fever'},{k:'bleeding',l:'Bleeding'},{k:'pain',l:'Severe Pain'},{k:'shock',l:'Shock'}].map(f=>
+                <label key={f.k} className="flex items-center gap-2">
+                  <input type="checkbox" checked={editingPatient[f.k]} onChange={e=>setEditingPatient({...editingPatient,[f.k]:e.target.checked})} className="checkbox"/>
+                  <span className="text-sm">{f.l}</span>
+                </label>
+              )}
+            </div>
+          </div>
+          <div className="grid-2" style={{gap:'8px',marginTop:'16px'}}>
+            <button onClick={()=>setEditingPatient(null)} className="btn btn-gray">Cancel</button>
+            <button onClick={saveEdit} disabled={loading} className="btn btn-blue">{loading?'Saving...':'💾 Save Changes'}</button>
+          </div>
+        </div>
+      </div>}
+    </div>
+  );
+}
+
+ReactDOM.render(<App/>,document.getElementById('root'));
+</script>
+</body>
+</html>
