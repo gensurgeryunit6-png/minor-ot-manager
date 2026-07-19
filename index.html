@@ -7,8 +7,8 @@
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
-<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-firestore.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:system-ui,-apple-system,sans-serif;background:#eff6ff;padding:8px}
@@ -228,16 +228,28 @@ function App(){
     if(!db)return{token:'ERROR',priority:'routine'};
     
     const today=getDate();
-    const docRef=db.collection('minorOT').doc(today).collection('counters').doc(isSeptic?'dressing':'ot');
     
     try{
+      // Ensure parent document exists
+      const parentRef=db.collection('minorOT').doc(today);
+      await parentRef.set({date:today,initialized:true},{merge:true});
+      
+      const counterType=isSeptic?'dressing':'ot';
+      const docRef=parentRef.collection('counters').doc(counterType);
+      
+      // Use transaction to increment counter atomically
       const result=await db.runTransaction(async(transaction)=>{
         const doc=await transaction.get(docRef);
-        const count=(doc.exists?doc.data().count:0)+1;
+        const currentCount=doc.exists&&doc.data().count?doc.data().count:0;
+        const newCount=currentCount+1;
         
-        transaction.set(docRef,{count,lastUpdate:new Date()});
+        transaction.set(docRef,{
+          count:newCount,
+          lastUpdate:new Date(),
+          type:counterType
+        });
         
-        return count;
+        return newCount;
       });
       
       const prefix=isSeptic?'D':'OT';
@@ -247,7 +259,7 @@ function App(){
       };
     }catch(e){
       console.error('Token generation error:',e);
-      return{token:'ERROR',priority:'routine'};
+      return{token:'ERROR-'+Date.now(),priority:'routine'};
     }
   };
 
@@ -273,7 +285,9 @@ function App(){
       status:'registered',
       time:new Date().toISOString(),
       preOp:{allergies:false,tt:false,testDose:false,attender:false,ornaments:false,consent:false},
+      preOpNA:false,
       postOp:{otNotes:false,hpe:false,pusCulture:false,prescription:false},
+      postOpNA:false,
       end:null
     });
     setStep(3);
@@ -309,13 +323,31 @@ function App(){
     
     try{
       const doc=await docRef.get();
-      const preOp={...doc.data().preOp,[key]:value};
-      const allChecked=Object.values(preOp).every(x=>x);
+      const currentData=doc.data();
       
-      await docRef.update({
-        preOp,
-        status:allChecked&&doc.data().status==='registered'?'ready':doc.data().status
-      });
+      // Handle NA button
+      if(key==='preOpNA'){
+        const updateData={preOpNA:value};
+        if(value===true){
+          // NA is checked - all items done
+          updateData.preOp={allergies:true,tt:true,testDose:true,attender:true,ornaments:true,consent:true};
+          updateData.status=currentData.status==='registered'?'ready':currentData.status;
+        }else{
+          // NA unchecked - reset to all false
+          updateData.preOp={allergies:false,tt:false,testDose:false,attender:false,ornaments:false,consent:false};
+        }
+        await docRef.update(updateData);
+      }else{
+        // Regular checkbox update
+        const preOp={...currentData.preOp,[key]:value};
+        const allChecked=Object.values(preOp).every(x=>x);
+        
+        await docRef.update({
+          preOp,
+          preOpNA:false,
+          status:allChecked&&currentData.status==='registered'?'ready':currentData.status
+        });
+      }
     }catch(e){
       console.error('Update error:',e);
     }
@@ -328,12 +360,28 @@ function App(){
     const docRef=db.collection('minorOT').doc(today).collection('patients').doc(docId);
     
     try{
-      await docRef.update({
-        postOp:{
-          ...patients.find(p=>p.docId===docId).postOp,
-          [key]:value
+      const patient=patients.find(p=>p.docId===docId);
+      
+      if(key==='postOpNA'){
+        const updateData={postOpNA:value};
+        if(value===true){
+          // NA is checked - all items done
+          updateData.postOp={otNotes:true,hpe:true,pusCulture:true,prescription:true};
+        }else{
+          // NA unchecked - reset to all false
+          updateData.postOp={otNotes:false,hpe:false,pusCulture:false,prescription:false};
         }
-      });
+        await docRef.update(updateData);
+      }else{
+        // Regular checkbox update
+        await docRef.update({
+          postOp:{
+            ...patient.postOp,
+            [key]:value
+          },
+          postOpNA:false
+        });
+      }
     }catch(e){
       console.error('Update error:',e);
     }
@@ -372,7 +420,11 @@ function App(){
   };
 
   const editPatient=(p)=>{
-    setEditingPatient({...p});
+    setEditingPatient({
+      ...p,
+      preOpNA:p.preOpNA||false,
+      postOpNA:p.postOpNA||false
+    });
   };
 
   const saveEdit=async()=>{
@@ -723,7 +775,7 @@ Red Flags: ${flags}
         }
         {patients.map(p=>{
           const c=Object.values(p.preOp).filter(v=>v).length;
-          const a=c===6;
+          const a=c===6||p.preOpNA;
           return<div key={p.docId} className="patient-card">
             <div className="flex justify-between mb-2">
               <div className="flex gap-2 items-center">
@@ -739,21 +791,24 @@ Red Flags: ${flags}
             <div className="checklist">
               <div className="checklist-header">
                 <span className="checklist-title">Pre-Op</span>
-                <span className={`checklist-count ${a?'btn-green':'btn-yellow'}`}>{c}/6</span>
+                <div style={{display:'flex',gap:'4px',alignItems:'center'}}>
+                  <span className={`checklist-count ${p.preOpNA?'btn-green':a?'btn-green':'btn-yellow'}`}>{p.preOpNA?'N/A':c}/6</span>
+                  <button onClick={()=>updatePreOp(p.docId,'preOpNA',!p.preOpNA)} className={`btn ${p.preOpNA?'btn-orange':'btn-gray'}`} style={{fontSize:'10px',padding:'2px 6px'}}>N/A</button>
+                </div>
               </div>
-              <div className="checklist-items">
+              {!p.preOpNA?<div className="checklist-items">
                 {[{k:'allergies',l:'Allergies'},{k:'tt',l:'TT'},{k:'testDose',l:'Test'},{k:'attender',l:'Attender'},{k:'ornaments',l:'Ornaments'},{k:'consent',l:'Consent'}].map(i=>
                   <label key={i.k} className="checklist-item">
                     <input type="checkbox" checked={p.preOp[i.k]} onChange={e=>updatePreOp(p.docId,i.k,e.target.checked)} className="checkbox"/>
                     {i.l}
                   </label>
                 )}
-              </div>
+              </div>:<div style={{padding:'8px',fontSize:'12px',fontWeight:'700',color:'#059669',textAlign:'center'}}>✅ Marked as N/A</div>}
             </div>
             <div className="grid-3" style={{marginTop:'8px',gap:'4px'}}>
               <button onClick={()=>updateStatus(p.docId,'registered')} className={`btn ${p.status==='registered'?'btn-yellow':'btn-gray'}`}>Reg</button>
-              <button onClick={()=>updateStatus(p.docId,'ready')} disabled={!a} className={`btn ${p.status==='ready'?'btn-green':a?'btn-gray':'btn-gray'}`}>Ready</button>
-              <button onClick={()=>updateStatus(p.docId,'in-progress')} disabled={!a} className={`btn ${a?'btn-purple':'btn-gray'}`}>Start</button>
+              <button onClick={()=>updateStatus(p.docId,'ready')} disabled={!a} className={`btn ${p.status==='ready'?'btn-green':p.status==='registered'&&a?'btn-green':'btn-gray'}`}>Ready</button>
+              <button onClick={()=>updateStatus(p.docId,'in-progress')} disabled={p.status!=='ready'} className={`btn ${p.status==='in-progress'?'btn-purple':p.status==='ready'?'btn-purple':'btn-gray'}`}>Start</button>
             </div>
           </div>
         })}
@@ -772,7 +827,7 @@ Red Flags: ${flags}
           </div>
         }
         {patients.map(p=>{
-          const po=Object.values(p.postOp).filter(v=>v).length,pc=po===4;
+          const po=Object.values(p.postOp).filter(v=>v).length,pc=po===4||p.postOpNA;
           return<div key={p.docId} className="patient-card">
             <div className="flex justify-between mb-2">
               <div className="flex gap-2 items-center">
@@ -788,22 +843,25 @@ Red Flags: ${flags}
             {p.status==='in-progress'&&<div className="postop-checklist checklist" style={{marginBottom:'8px'}}>
               <div className="checklist-header">
                 <span className="checklist-title">Post-Op</span>
-                <span className={`checklist-count ${pc?'btn-purple':'btn-yellow'}`}>{po}/4</span>
+                <div style={{display:'flex',gap:'4px',alignItems:'center'}}>
+                  <span className={`checklist-count ${p.postOpNA?'btn-purple':pc?'btn-purple':'btn-yellow'}`}>{p.postOpNA?'N/A':po}/4</span>
+                  <button onClick={()=>updatePostOp(p.docId,'postOpNA',!p.postOpNA)} className={`btn ${p.postOpNA?'btn-purple':'btn-gray'}`} style={{fontSize:'10px',padding:'2px 6px'}}>N/A</button>
+                </div>
               </div>
-              <div className="checklist-items">
+              {!p.postOpNA?<div className="checklist-items">
                 {[{k:'otNotes',l:'OT Notes'},{k:'hpe',l:'HPE'},{k:'pusCulture',l:'Culture'},{k:'prescription',l:'Rx'}].map(i=>
                   <label key={i.k} className="checklist-item">
                     <input type="checkbox" checked={p.postOp[i.k]} onChange={e=>updatePostOp(p.docId,i.k,e.target.checked)} className="checkbox"/>
                     {i.l}
                   </label>
                 )}
-              </div>
+              </div>:<div style={{padding:'8px',fontSize:'12px',fontWeight:'700',color:'#7c3aed',textAlign:'center'}}>✅ Marked as N/A</div>}
             </div>}
             <div className="grid-4" style={{gap:'4px'}}>
               <button onClick={()=>updateStatus(p.docId,'registered')} className={`btn ${p.status==='registered'?'btn-yellow':'btn-gray'}`}>Reg</button>
               <button onClick={()=>updateStatus(p.docId,'ready')} className={`btn ${p.status==='ready'?'btn-green':'btn-gray'}`}>Ready</button>
               <button onClick={()=>updateStatus(p.docId,'in-progress')} className={`btn ${p.status==='in-progress'?'btn-purple':'btn-gray'}`}>Prog</button>
-              <button onClick={()=>updateStatus(p.docId,'completed')} disabled={!pc} className={`btn ${p.status==='completed'?'btn-gray':pc?'btn-gray':'btn-gray'}`}>Done</button>
+              <button onClick={()=>updateStatus(p.docId,'completed')} disabled={!pc} className={`btn ${p.status==='completed'?'btn-gray':pc?'btn-green':'btn-gray'}`}>Done</button>
             </div>
           </div>
         })}
