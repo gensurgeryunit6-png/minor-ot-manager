@@ -3,24 +3,23 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Minor OT - Firebase</title>
+<title>Minor OT</title>
+<!-- Firebase (compat SDK — works with plain <script>/Babel-standalone, no build step) -->
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore-compat.js"></script>
+<script src="firebase-config.js"></script>
+<!-- React -->
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:system-ui,-apple-system,sans-serif;background:#eff6ff;padding:8px}
 .container{max-width:1024px;margin:0 auto}
 .card{background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,0.1);padding:12px;margin-bottom:12px}
-.header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px}
+.header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
 .title{font-size:20px;font-weight:700;color:#2563eb}
 .date{font-size:12px;color:#6b7280}
-.status-indicator{display:flex;align-items:center;gap:4px;font-size:11px;font-weight:700;padding:4px 8px;border-radius:6px}
-.status-online{background:#dcfce7;color:#166534}
-.status-syncing{background:#fef3c7;color:#92400e}
-.status-offline{background:#fee2e2;color:#991b1b}
 .btn{padding:6px 12px;border:none;border-radius:8px;font-weight:700;cursor:pointer;font-size:12px}
 .btn-red{background:#ef4444;color:#fff}
 .btn-blue{background:#3b82f6;color:#fff}
@@ -92,368 +91,135 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#eff6ff;padding:8
 .modal{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:1000;padding:16px}
 .modal-content{background:#fff;border-radius:16px;padding:20px;max-width:500px;width:100%;max-height:90vh;overflow-y:auto}
 .modal-header{font-size:18px;font-weight:700;margin-bottom:16px}
-.loading{display:flex;align-items:center;gap:6px;font-size:12px;color:#6b7280}
-.spinner{display:inline-block;width:12px;height:12px;border:2px solid #e5e7eb;border-top-color:#3b82f6;border-radius:50%;animation:spin 0.6s linear infinite}
-@keyframes spin{to{transform:rotate(360deg)}}
+.sync-badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;padding:3px 8px;border-radius:999px;white-space:nowrap}
+.sync-online{background:#d1fae5;color:#065f46}
+.sync-offline{background:#fee2e2;color:#991b1b}
+.sync-syncing{background:#fef3c7;color:#92400e}
+.sync-dot{width:7px;height:7px;border-radius:50%;background:currentColor;display:inline-block}
 </style>
 </head>
 <body>
 <div id="root"></div>
 <script type="text/babel">
-const {useState,useEffect}=React;
+const {useState,useEffect,useRef}=React;
 
-// Firebase initialization will happen here
-let db;
-let initialized=false;
-let unsubscribe=null;
-let connectionStateUnsubscribe=null;
-
-async function initializeFirebase(){
-  if(initialized)return;
-  
-  try{
-    // Dynamically import firebase-config
-    const configScript=document.createElement('script');
-    configScript.src='firebase-config.js';
-    configScript.onload=()=>{
-      firebase.initializeApp(firebaseConfig);
-      db=firebase.firestore();
-      
-      // Enable offline persistence
-      db.enablePersistence().catch(err=>{
-        if(err.code==='failed-precondition'){
-          console.log('Multiple tabs open');
-        }else if(err.code==='unimplemented'){
-          console.log('Offline persistence not supported');
-        }
-      });
-      
-      initialized=true;
-    };
-    document.head.appendChild(configScript);
-  }catch(e){
-    console.error('Firebase init error:',e);
-  }
-}
-
-const getDate=()=>{
-  const d=new Date();
-  return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-};
+// ---- Firebase init ----
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+try{
+  db.enablePersistence({synchronizeTabs:true}).catch(e=>{
+    console.warn('Offline persistence unavailable:',e.code);
+  });
+}catch(e){console.warn(e)}
 
 function App(){
-  const[patients,setPatients]=useState([]);
-  const[tab,setTab]=useState('reg');
-  const[step,setStep]=useState(1);
-  const[form,setForm]=useState({name:'',age:'',sex:'M',opd:'',diagnosis:'',procedure:'',isSeptic:false,fever:false,bleeding:false,pain:false,shock:false});
-  const[curr,setCurr]=useState(null);
-  const[editingPatient,setEditingPatient]=useState(null);
-  const[firebaseReady,setFirebaseReady]=useState(false);
-  const[connectionState,setConnectionState]=useState('syncing');
-  const[loading,setLoading]=useState(false);
+const getDate=()=>{const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`};
+const[date]=useState(getDate); // fixed for the session, matches original day-scoped behavior
+const dayRef=db.collection('minorOT').doc(date);
+const patientsCol=dayRef.collection('patients');
 
-  // Initialize Firebase
-  useEffect(()=>{
-    initializeFirebase();
-    const checkInterval=setInterval(()=>{
-      if(initialized&&db){
-        setFirebaseReady(true);
-        clearInterval(checkInterval);
-        
-        // Listen to connection state
-        connectionStateUnsubscribe=firebase.firestore().collection('_internal').doc('_connection_state').onSnapshot(
-          doc=>{
-            if(doc.exists&&doc.data().connected){
-              setConnectionState('online');
-            }
-          },
-          ()=>{
-            setConnectionState('offline');
-          }
-        );
-        
-        // Set up real-time listener for today's patients
-        const today=getDate();
-        unsubscribe=db.collection('minorOT').doc(today).collection('patients').orderBy('time','desc').onSnapshot(
-          snapshot=>{
-            const data=[];
-            snapshot.forEach(doc=>{
-              data.push({...doc.data(),docId:doc.id});
-            });
-            setPatients(data);
-            setConnectionState('online');
-          },
-          error=>{
-            console.log('Listener error:',error);
-            setConnectionState('offline');
-          }
-        );
-      }
-    },500);
-    
-    return ()=>{
-      clearInterval(checkInterval);
-      if(unsubscribe)unsubscribe();
-      if(connectionStateUnsubscribe)connectionStateUnsubscribe();
-    };
-  },[]);
+const[patients,setPatients]=useState([]);
+const[tab,setTab]=useState('reg');
+const[step,setStep]=useState(1);
+const[form,setForm]=useState({name:'',age:'',sex:'M',opd:'',diagnosis:'',procedure:'',isSeptic:false,fever:false,bleeding:false,pain:false,shock:false});
+const[curr,setCurr]=useState(null);
+const[editingPatient,setEditingPatient]=useState(null);
+const[saving,setSaving]=useState(false);
 
-  // Auto-reset daily
-  useEffect(()=>{
-    if(!firebaseReady||!db)return;
-    
-    const checkDailyReset=async()=>{
-      const today=getDate();
-      const settingsRef=db.collection('minorOT').doc(today).collection('settings').doc('reset');
-      
-      try{
-        const doc=await settingsRef.get();
-        if(!doc.exists){
-          // First time today, reset everything
-          const yesterday=new Date();
-          yesterday.setDate(yesterday.getDate()-1);
-          const yesterdayStr=yesterday.getFullYear()+'-'+String(yesterday.getMonth()+1).padStart(2,'0')+'-'+String(yesterday.getDate()).padStart(2,'0');
-          
-          await settingsRef.set({timestamp:new Date(),date:today});
-        }
-      }catch(e){
-        console.log('Reset check error:',e);
-      }
-    };
-    
-    checkDailyReset();
-  },[firebaseReady]);
+// ---- Network / sync status ----
+const[netOnline,setNetOnline]=useState(navigator.onLine);
+const[pendingWrites,setPendingWrites]=useState(false);
+useEffect(()=>{
+const goOnline=()=>{setNetOnline(true);db.enableNetwork().catch(()=>{})};
+const goOffline=()=>setNetOnline(false);
+window.addEventListener('online',goOnline);
+window.addEventListener('offline',goOffline);
+return()=>{window.removeEventListener('online',goOnline);window.removeEventListener('offline',goOffline)};
+},[]);
+const syncStatus=!netOnline?'offline':pendingWrites?'syncing':'online';
+const syncLabel=syncStatus==='offline'?'Offline':syncStatus==='syncing'?'Syncing':'Online';
 
-  const genTokenFirestore=async(isSeptic)=>{
-    if(!db)return{token:'ERROR',priority:'routine'};
-    
-    const today=getDate();
-    
-    try{
-      // Ensure parent document exists
-      const parentRef=db.collection('minorOT').doc(today);
-      await parentRef.set({date:today,initialized:true},{merge:true});
-      
-      const counterType=isSeptic?'dressing':'ot';
-      const docRef=parentRef.collection('counters').doc(counterType);
-      
-      // Use transaction to increment counter atomically
-      const result=await db.runTransaction(async(transaction)=>{
-        const doc=await transaction.get(docRef);
-        const currentCount=doc.exists&&doc.data().count?doc.data().count:0;
-        const newCount=currentCount+1;
-        
-        transaction.set(docRef,{
-          count:newCount,
-          lastUpdate:new Date(),
-          type:counterType
-        });
-        
-        return newCount;
-      });
-      
-      const prefix=isSeptic?'D':'OT';
-      return{
-        token:`${prefix}-${String(result).padStart(3,'0')}`,
-        priority:'routine'
-      };
-    }catch(e){
-      console.error('Token generation error:',e);
-      return{token:'ERROR-'+Date.now(),priority:'routine'};
-    }
-  };
+// ---- Real-time listener (one collection scoped to today, minimal reads) ----
+useEffect(()=>{
+const unsub=patientsCol.orderBy('time').onSnapshot({includeMetadataChanges:true},snap=>{
+setPatients(snap.docs.map(d=>({id:d.id,...d.data()})));
+setPendingWrites(snap.metadata.hasPendingWrites);
+},err=>{console.error('Sync error:',err)});
+return()=>unsub();
+// eslint-disable-next-line
+},[date]);
 
-  const next1=()=>{
-    if(!form.name||!form.age||!form.opd||!form.diagnosis||!form.procedure){
-      alert('Fill all fields');
-      return;
-    }
-    setStep(2);
-  };
+const resetForm=()=>setForm({name:'',age:'',sex:'M',opd:'',diagnosis:'',procedure:'',isSeptic:false,fever:false,bleeding:false,pain:false,shock:false});
 
-  const next2=async()=>{
-    const hasRedFlags=form.fever||form.bleeding||form.pain||form.shock;
-    const{token,priority}=await genTokenFirestore(form.isSeptic);
-    const room=form.isSeptic?'Dressing':`Minor OT ${(patients.filter(p=>!p.isSeptic).length%3)+1}`;
-    
-    setCurr({
-      id:Date.now(),
-      ...form,
-      token,
-      priority,
-      room,
-      status:'registered',
-      time:new Date().toISOString(),
-      preOp:{allergies:false,tt:false,testDose:false,attender:false,ornaments:false,consent:false},
-      preOpNA:false,
-      postOp:{otNotes:false,hpe:false,pusCulture:false,prescription:false},
-      postOpNA:false,
-      end:null
-    });
-    setStep(3);
-  };
+// Local preview only — the authoritative, duplicate-safe token is assigned
+// inside the Firestore transaction in confirm().
+const genTokenPreview=(s,r)=>{const p=s?'D':'OT',c=patients.filter(x=>x.isSeptic===s).length+1;return{token:`${p}-${String(c).padStart(3,'0')}`,priority:r?'urgent':'routine'}};
 
-  const confirm=async()=>{
-    if(!firebaseReady||!db){
-      alert('Firebase not ready');
-      return;
-    }
-    
-    setLoading(true);
-    try{
-      const today=getDate();
-      const docRef=db.collection('minorOT').doc(today).collection('patients').doc(String(curr.id));
-      await docRef.set(curr);
-      
-      setForm({name:'',age:'',sex:'M',opd:'',diagnosis:'',procedure:'',isSeptic:false,fever:false,bleeding:false,pain:false,shock:false});
-      setCurr(null);
-      setStep(1);
-    }catch(e){
-      alert('Error saving patient: '+e.message);
-    }finally{
-      setLoading(false);
-    }
-  };
+const next1=()=>{if(!form.name||!form.age||!form.opd||!form.diagnosis||!form.procedure){alert('Fill all fields');return}setStep(2)};
+const next2=()=>{const r=form.fever||form.bleeding||form.pain||form.shock,{token,priority}=genTokenPreview(form.isSeptic,r),room=form.isSeptic?'Dressing':`Minor OT ${(patients.filter(p=>!p.isSeptic).length%3)+1}`;setCurr({...form,token,priority,room,status:'registered',time:new Date().toISOString(),preOp:{allergies:false,tt:false,testDose:false,attender:false,ornaments:false,consent:false},postOp:{otNotes:false,hpe:false,pusCulture:false,prescription:false},end:null});setStep(3)};
 
-  const updatePreOp=async(docId,key,value)=>{
-    if(!db)return;
-    
-    const today=getDate();
-    const docRef=db.collection('minorOT').doc(today).collection('patients').doc(docId);
-    
-    try{
-      const doc=await docRef.get();
-      const currentData=doc.data();
-      
-      // Handle NA button
-      if(key==='preOpNA'){
-        const updateData={preOpNA:value};
-        if(value===true){
-          // NA is checked - all items done
-          updateData.preOp={allergies:true,tt:true,testDose:true,attender:true,ornaments:true,consent:true};
-          updateData.status=currentData.status==='registered'?'ready':currentData.status;
-        }else{
-          // NA unchecked - reset to all false
-          updateData.preOp={allergies:false,tt:false,testDose:false,attender:false,ornaments:false,consent:false};
-        }
-        await docRef.update(updateData);
-      }else{
-        // Regular checkbox update
-        const preOp={...currentData.preOp,[key]:value};
-        const allChecked=Object.values(preOp).every(x=>x);
-        
-        await docRef.update({
-          preOp,
-          preOpNA:false,
-          status:allChecked&&currentData.status==='registered'?'ready':currentData.status
-        });
-      }
-    }catch(e){
-      console.error('Update error:',e);
-    }
-  };
+const confirm=async()=>{
+if(saving)return;
+setSaving(true);
+try{
+const newRef=patientsCol.doc();
+const field=curr.isSeptic?'septicCount':'nonSepticCount';
+const prefix=curr.isSeptic?'D':'OT';
+await db.runTransaction(async(tx)=>{
+const daySnap=await tx.get(dayRef);
+const data=daySnap.exists?daySnap.data():{};
+const nextCount=(data[field]||0)+1;
+const finalToken=`${prefix}-${String(nextCount).padStart(3,'0')}`;
+tx.set(dayRef,{[field]:nextCount},{merge:true});
+tx.set(newRef,{...curr,token:finalToken});
+});
+resetForm();setCurr(null);setStep(1);
+}catch(e){alert('Could not add patient (check connection): '+e.message)}
+setSaving(false);
+};
 
-  const updatePostOp=async(docId,key,value)=>{
-    if(!db)return;
-    
-    const today=getDate();
-    const docRef=db.collection('minorOT').doc(today).collection('patients').doc(docId);
-    
-    try{
-      const patient=patients.find(p=>p.docId===docId);
-      
-      if(key==='postOpNA'){
-        const updateData={postOpNA:value};
-        if(value===true){
-          // NA is checked - all items done
-          updateData.postOp={otNotes:true,hpe:true,pusCulture:true,prescription:true};
-        }else{
-          // NA unchecked - reset to all false
-          updateData.postOp={otNotes:false,hpe:false,pusCulture:false,prescription:false};
-        }
-        await docRef.update(updateData);
-      }else{
-        // Regular checkbox update
-        await docRef.update({
-          postOp:{
-            ...patient.postOp,
-            [key]:value
-          },
-          postOpNA:false
-        });
-      }
-    }catch(e){
-      console.error('Update error:',e);
-    }
-  };
+const updatePre=(id,k,v)=>{
+const p=patients.find(x=>x.id===id);if(!p)return;
+const updated={...p.preOp,[k]:v},allDone=Object.values(updated).every(x=>x);
+const upd={[`preOp.${k}`]:v};
+if(allDone&&p.status==='registered')upd.status='ready';
+patientsCol.doc(id).update(upd).catch(e=>console.error('Update failed:',e));
+};
+const updatePost=(id,k,v)=>{patientsCol.doc(id).update({[`postOp.${k}`]:v}).catch(e=>console.error('Update failed:',e))};
+const updateStatus=(id,s)=>{
+const upd={status:s};
+if(s==='completed')upd.end=new Date().toISOString();
+patientsCol.doc(id).update(upd).catch(e=>console.error('Update failed:',e));
+};
+const del=(id)=>{if(window.confirm('Delete this patient?'))patientsCol.doc(id).delete().catch(e=>alert('Delete failed: '+e.message))};
 
-  const updateStatus=async(docId,newStatus)=>{
-    if(!db)return;
-    
-    const today=getDate();
-    const docRef=db.collection('minorOT').doc(today).collection('patients').doc(docId);
-    
-    try{
-      const updateData={status:newStatus};
-      if(newStatus==='completed'){
-        updateData.end=new Date().toISOString();
-      }
-      await docRef.update(updateData);
-    }catch(e){
-      console.error('Status update error:',e);
-    }
-  };
+const clearAll=async()=>{
+if(!window.confirm('⚠️ CLEAR ALL DATA?\n\nThis will delete ALL patients and reset everything. This cannot be undone!'))return;
+try{
+const chunks=[];
+for(let i=0;i<patients.length;i+=450)chunks.push(patients.slice(i,i+450));
+for(const chunk of chunks){
+const batch=db.batch();
+chunk.forEach(p=>batch.delete(patientsCol.doc(p.id)));
+await batch.commit();
+}
+await dayRef.set({nonSepticCount:0,septicCount:0},{merge:true});
+alert('All data cleared successfully!');
+}catch(e){alert('Clear failed: '+e.message)}
+};
 
-  const deletePatient=async(docId)=>{
-    if(!window.confirm('Delete this patient?'))return;
-    
-    if(!db)return;
-    
-    const today=getDate();
-    const docRef=db.collection('minorOT').doc(today).collection('patients').doc(docId);
-    
-    try{
-      await docRef.delete();
-    }catch(e){
-      console.error('Delete error:',e);
-    }
-  };
+const editPatient=(p)=>{setEditingPatient({...p})};
+const saveEdit=()=>{
+if(!editingPatient.name||!editingPatient.age||!editingPatient.opd||!editingPatient.diagnosis||!editingPatient.procedure){alert('Fill all fields');return}
+const{id,name,age,sex,opd,diagnosis,procedure,fever,bleeding,pain,shock}=editingPatient;
+patientsCol.doc(id).update({name,age,sex,opd,diagnosis,procedure,fever,bleeding,pain,shock})
+.then(()=>setEditingPatient(null))
+.catch(e=>alert('Save failed: '+e.message));
+};
 
-  const editPatient=(p)=>{
-    setEditingPatient({
-      ...p,
-      preOpNA:p.preOpNA||false,
-      postOpNA:p.postOpNA||false
-    });
-  };
-
-  const saveEdit=async()=>{
-    if(!editingPatient.name||!editingPatient.age||!editingPatient.opd||!editingPatient.diagnosis||!editingPatient.procedure){
-      alert('Fill all fields');
-      return;
-    }
-    
-    if(!db)return;
-    
-    setLoading(true);
-    try{
-      const today=getDate();
-      const docRef=db.collection('minorOT').doc(today).collection('patients').doc(editingPatient.docId);
-      
-      const{docId,...updateData}=editingPatient;
-      await docRef.update(updateData);
-      
-      setEditingPatient(null);
-    }catch(e){
-      alert('Error saving: '+e.message);
-    }finally{
-      setLoading(false);
-    }
-  };
-
-  const exportSingleReg=(p)=>{
-    const flags=[p.fever&&'Fever',p.bleeding&&'Bleeding',p.pain&&'Severe Pain',p.shock&&'Shock'].filter(Boolean).join(', ')||'None';
-    const msg=`🏥 MINOR OT REGISTRATION
+const exportSingleReg=(p)=>{
+const flags=[p.fever&&'Fever',p.bleeding&&'Bleeding',p.pain&&'Severe Pain',p.shock&&'Shock'].filter(Boolean).join(', ')||'None';
+const msg=`🏥 MINOR OT REGISTRATION
 
 📋 Token: *${p.token}*
 Name: ${p.name}
@@ -468,485 +234,337 @@ Priority: ${p.priority.toUpperCase()}
 Red Flags: ${flags}
 
 ⏰ ${new Date(p.time).toLocaleString()}`;
-    window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`,'_blank');
-  };
+window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`,'_blank');
+};
+const exportRegQueue=()=>{
+const regPatients=patients.filter(p=>p.status==='registered');
+if(regPatients.length===0){alert('No registered patients');return}
+const list=regPatients.map((p,i)=>{
+const flags=[p.fever&&'Fever',p.bleeding&&'Bleeding',p.pain&&'Severe Pain',p.shock&&'Shock'].filter(Boolean).join(', ')||'None';
+return`*${i+1}. ${p.token}* ${p.priority==='urgent'?'🔴':'🟢'}
+Name: ${p.name}
+Age/Sex: ${p.age}/${p.sex}
+OPD: ${p.opd}
+Diagnosis: ${p.diagnosis}
+Procedure: ${p.procedure}
+Type: ${p.isSeptic?'🔴 SEPTIC':'🟢 NON-SEPTIC'}
+Room: ${p.room}
+Red Flags: ${flags}`;
+}).join('\n\n');
+const msg=`🏥 REGISTERED QUEUE
+${new Date().toLocaleString()}
 
-  const exportRegQueue=()=>{
-    const regQueue=patients.filter(p=>p.status==='registered').sort((a,b)=>new Date(a.time)-new Date(b.time));
-    if(regQueue.length===0){
-      alert('No registered patients');
-      return;
-    }
-    
-    let msg='🏥 REGISTRATION QUEUE\n\n';
-    regQueue.forEach(p=>{
-      const flags=[p.fever&&'🔴 Fever',p.bleeding&&'🔴 Bleeding',p.pain&&'🔴 Pain',p.shock&&'🔴 Shock'].filter(Boolean).join(' ')||'✅ Stable';
-      msg+=`${p.token} • ${p.name} (${p.age}/${p.sex}) • ${p.room}\nFlags: ${flags}\n\n`;
-    });
-    window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`,'_blank');
-  };
+${list}
 
-  const exportQueue=()=>{
-    const queue=patients.filter(p=>['ready','in-progress'].includes(p.status)).sort((a,b)=>new Date(a.time)-new Date(b.time));
-    if(queue.length===0){
-      alert('Queue is empty');
-      return;
-    }
-    
-    let msg='📋 LIVE QUEUE\n\n';
-    queue.forEach(p=>{
-      const status=p.status==='ready'?'✅ READY':'🔄 IN PROGRESS';
-      msg+=`${p.token} • ${p.name} (${p.age}/${p.sex}) • ${status}\nRoom: ${p.room}\n\n`;
-    });
-    msg+='⏰ Updated: '+new Date().toLocaleString();
-    window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`,'_blank');
-  };
+📊 Total Registered: ${regPatients.length}`;
+window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`,'_blank');
+};
+const exportPreOpQueue=()=>{
+const preOpPatients=patients.filter(p=>['registered','ready'].includes(p.status));
+if(preOpPatients.length===0){alert('No pre-op patients');return}
+const list=preOpPatients.map((p,i)=>{
+const c=Object.values(p.preOp).filter(v=>v).length;
+return`*${i+1}. ${p.token}* ${p.priority==='urgent'?'🔴':'🟢'}
+Name: ${p.name}
+Age/Sex: ${p.age}/${p.sex}
+Diagnosis: ${p.diagnosis}
+Room: ${p.room}
+Pre-Op Checklist: ${c}/6
+Status: ${p.status.toUpperCase()}`;
+}).join('\n\n');
+const msg=`✅ PRE-OP QUEUE
+${new Date().toLocaleString()}
 
-  const exportDayCensus=()=>{
-    if(patients.length===0){
-      alert('No patients today');
-      return;
-    }
-    
-    const completed=patients.filter(p=>p.status==='completed');
-    const ongoing=patients.filter(p=>p.status==='in-progress');
-    const septic=patients.filter(p=>p.isSeptic);
-    
-    let msg='📊 DAILY CENSUS\n\n';
-    msg+=`Total Patients: ${patients.length}\n`;
-    msg+=`Completed: ${completed.length}\n`;
-    msg+=`Ongoing: ${ongoing.length}\n`;
-    msg+=`Registered: ${patients.filter(p=>p.status==='registered').length}\n`;
-    msg+=`Ready: ${patients.filter(p=>p.status==='ready').length}\n\n`;
-    
-    msg+=`SEPTIC CASES: ${septic.length}\n\n`;
-    
-    msg+='CASE LIST:\n';
-    patients.forEach(p=>{
-      msg+=`${p.token} | ${p.name} | ${p.diagnosis} → ${p.procedure}\n`;
-    });
-    
-    msg+=`\n⏰ ${new Date().toLocaleString()}`;
-    window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`,'_blank');
-  };
+${list}
 
-  const clearAllData=async()=>{
-    if(!window.confirm('⚠️ CLEAR ALL DATA?\\n\\nThis will delete ALL patients and reset everything. This cannot be undone!'))return;
-    
-    if(!db)return;
-    
-    setLoading(true);
-    try{
-      const today=getDate();
-      const snapshot=await db.collection('minorOT').doc(today).collection('patients').get();
-      const batch=db.batch();
-      
-      snapshot.forEach(doc=>{
-        batch.delete(doc.ref);
-      });
-      
-      await batch.commit();
-      alert('All data cleared successfully!');
-    }catch(e){
-      alert('Error clearing data: '+e.message);
-    }finally{
-      setLoading(false);
-    }
-  };
+📊 SUMMARY
+Registered: ${patients.filter(p=>p.status==='registered').length}
+Ready: ${patients.filter(p=>p.status==='ready').length}`;
+window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`,'_blank');
+};
+const exportDayCensus=()=>{
+if(patients.length===0){alert('No patients');return}
+const list=patients.map((p,i)=>{
+const preOp=Object.values(p.preOp).filter(v=>v).length;
+const postOp=Object.values(p.postOp).filter(v=>v).length;
+return`*${i+1}. ${p.token}* ${p.priority==='urgent'?'🔴':'🟢'}
+Name: ${p.name}
+Age/Sex: ${p.age}/${p.sex}
+Diagnosis: ${p.diagnosis}
+Procedure: ${p.procedure}
+Type: ${p.isSeptic?'🔴 SEPTIC':'🟢 NON-SEPTIC'}
+Room: ${p.room}
+Status: ${p.status.toUpperCase()}
+Pre-Op: ${preOp}/6 | Post-Op: ${postOp}/4`;
+}).join('\n\n');
+const septic=patients.filter(p=>p.isSeptic).length;
+const nonseptic=patients.filter(p=>!p.isSeptic).length;
+const msg=`🏥 DAILY CENSUS
+${new Date().toLocaleString()}
 
-  const statusIndicator=(
-    <div className={`status-indicator status-${connectionState}`}>
-      {connectionState==='online'&&<span>🟢 Online</span>}
-      {connectionState==='syncing'&&<span><span className="spinner"></span>Syncing</span>}
-      {connectionState==='offline'&&<span>🔴 Offline</span>}
-    </div>
-  );
+${list}
 
-  if(!firebaseReady){
-    return(
-      <div className="container" style={{textAlign:'center',paddingTop:'40px'}}>
-        <div className="loading">
-          <span className="spinner"></span>
-          Initializing Firebase...
-        </div>
-      </div>
-    );
-  }
-
-  const septic=patients.filter(p=>p.isSeptic).length;
-  const nonSeptic=patients.filter(p=>!p.isSeptic).length;
-  const ready=patients.filter(p=>p.status==='ready').length;
-  const inProgress=patients.filter(p=>p.status==='in-progress').length;
-  const completed=patients.filter(p=>p.status==='completed').length;
-
-  return(
-    <div className="container">
-      <div className="card">
-        <div className="header">
-          <div>
-            <div className="title">🏥 Minor OT Manager</div>
-            <div className="date" style={{marginTop:'4px'}}>{getDate()}</div>
-          </div>
-          {statusIndicator}
-        </div>
-      </div>
-
-      <div className="card">
-        <div className="stats">
-          <div className="stat stat-blue"><div className="stat-value">{patients.length}</div><div className="stat-label">Total</div></div>
-          <div className="stat stat-yellow"><div className="stat-value">{patients.filter(p=>p.status==='registered').length}</div><div className="stat-label">Registered</div></div>
-          <div className="stat stat-green"><div className="stat-value">{ready}</div><div className="stat-label">Ready</div></div>
-          <div className="stat stat-purple"><div className="stat-value">{inProgress}</div><div className="stat-label">In Progress</div></div>
-          <div className="stat stat-gray"><div className="stat-value">{completed}</div><div className="stat-label">Completed</div></div>
-        </div>
-      </div>
-
-      <div className="card">
-        <div className="tabs">
-          <button onClick={()=>setTab('reg')} className={`btn ${tab==='reg'?'btn-blue':'btn-gray'}`}>📝 Register</button>
-          <button onClick={()=>setTab('queue')} className={`btn ${tab==='queue'?'btn-blue':'btn-gray'}`}>📋 Queue</button>
-          <button onClick={()=>setTab('preop')} className={`btn ${tab==='preop'?'btn-blue':'btn-gray'}`}>✅ Pre-Op</button>
-          <button onClick={()=>setTab('postop')} className={`btn ${tab==='postop'?'btn-blue':'btn-gray'}`}>🎯 Post-Op</button>
-          <button onClick={()=>setTab('stats')} className={`btn ${tab==='stats'?'btn-blue':'btn-gray'}`}>📊 Stats</button>
-          <button onClick={clearAllData} disabled={loading} className="btn btn-red">🗑️ Clear All</button>
-        </div>
-      </div>
-
-      {step===1&&tab==='reg'&&<div className="card">
-        <div style={{marginBottom:'16px',fontWeight:'700',fontSize:'14px'}}>Step 1: Basic Info</div>
-        <div className="form-group">
-          <label className="text-sm font-bold" style={{display:'block',marginBottom:'4px'}}>Patient Name *</label>
-          <input type="text" value={form.name} onChange={e=>setForm({...form,name:e.target.value})} placeholder="Full name" className="form-input"/>
-        </div>
-        <div className="grid-3 mb-3">
-          <div>
-            <label className="text-sm font-bold" style={{display:'block',marginBottom:'4px'}}>Age *</label>
-            <input type="number" value={form.age} onChange={e=>setForm({...form,age:e.target.value})} placeholder="Age" className="form-input"/>
-          </div>
-          <div>
-            <label className="text-sm font-bold" style={{display:'block',marginBottom:'4px'}}>Sex</label>
-            <select value={form.sex} onChange={e=>setForm({...form,sex:e.target.value})} className="form-input">
-              <option value="M">Male</option><option value="F">Female</option><option value="O">Other</option>
-            </select>
-          </div>
-          <div>
-            <label className="text-sm font-bold" style={{display:'block',marginBottom:'4px'}}>OPD *</label>
-            <input type="text" value={form.opd} onChange={e=>setForm({...form,opd:e.target.value})} placeholder="OPD" className="form-input"/>
-          </div>
-        </div>
-        <div className="form-group">
-          <label className="text-sm font-bold" style={{display:'block',marginBottom:'4px'}}>Diagnosis *</label>
-          <input type="text" value={form.diagnosis} onChange={e=>setForm({...form,diagnosis:e.target.value})} placeholder="Diagnosis" className="form-input"/>
-        </div>
-        <div className="form-group">
-          <label className="text-sm font-bold" style={{display:'block',marginBottom:'4px'}}>Procedure *</label>
-          <input type="text" value={form.procedure} onChange={e=>setForm({...form,procedure:e.target.value})} placeholder="Procedure" className="form-input"/>
-        </div>
-        <button onClick={next1} className="btn btn-blue" style={{width:'100%',marginTop:'8px'}}>Next →</button>
-      </div>}
-
-      {step===2&&tab==='reg'&&<div className="card">
-        <div style={{marginBottom:'16px',fontWeight:'700',fontSize:'14px'}}>Step 2: Red Flags & Type</div>
-        <div className="form-group">
-          <label className="text-sm font-bold" style={{display:'block',marginBottom:'8px'}}>Red Flags (if any)</label>
-          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'8px'}}>
-            {[{k:'fever',l:'🌡️ Fever'},{k:'bleeding',l:'🩸 Bleeding'},{k:'pain',l:'😣 Severe Pain'},{k:'shock',l:'⚡ Shock'}].map(f=>
-              <label key={f.k} className="flex items-center gap-2" style={{padding:'8px',background:'#f3f4f6',borderRadius:'6px',cursor:'pointer'}}>
-                <input type="checkbox" checked={form[f.k]} onChange={e=>setForm({...form,[f.k]:e.target.checked})} className="checkbox"/>
-                <span className="text-sm">{f.l}</span>
-              </label>
-            )}
-          </div>
-        </div>
-        <div className="form-group" style={{marginTop:'16px'}}>
-          <label className="text-sm font-bold" style={{display:'block',marginBottom:'8px'}}>Case Type</label>
-          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'8px'}}>
-            <button onClick={()=>setForm({...form,isSeptic:false})} className={`btn ${!form.isSeptic?'btn-green':'btn-gray'}`} style={{padding:'12px',fontSize:'14px'}}>🟢 Non-Septic (OT)</button>
-            <button onClick={()=>setForm({...form,isSeptic:true})} className={`btn ${form.isSeptic?'btn-red':'btn-gray'}`} style={{padding:'12px',fontSize:'14px'}}>🔴 Septic (Dressing)</button>
-          </div>
-        </div>
-        <div className="grid-2" style={{marginTop:'16px',gap:'8px'}}>
-          <button onClick={()=>setStep(1)} className="btn btn-gray">← Back</button>
-          <button onClick={next2} className="btn btn-blue">Generate Token →</button>
-        </div>
-      </div>}
-
-      {step===3&&tab==='reg'&&curr&&<div className="card">
-        <div style={{marginBottom:'16px',fontWeight:'700',fontSize:'14px'}}>Step 3: Confirm Registration</div>
-        <div className="token-big" style={{textAlign:'center',marginBottom:'12px'}}>{curr.token}</div>
-        <div style={{background:'#eff6ff',padding:'12px',borderRadius:'8px',marginBottom:'12px',fontSize:'13px',lineHeight:'1.6'}}>
-          <div><span style={{fontWeight:'700'}}>Name:</span> {curr.name}</div>
-          <div><span style={{fontWeight:'700'}}>Age/Sex:</span> {curr.age}/{curr.sex}</div>
-          <div><span style={{fontWeight:'700'}}>OPD:</span> {curr.opd}</div>
-          <div><span style={{fontWeight:'700'}}>Diagnosis:</span> {curr.diagnosis}</div>
-          <div><span style={{fontWeight:'700'}}>Procedure:</span> {curr.procedure}</div>
-          <div><span style={{fontWeight:'700'}}>Type:</span> {curr.isSeptic?'🔴 SEPTIC':'🟢 NON-SEPTIC'}</div>
-          <div><span style={{fontWeight:'700'}}>Room:</span> {curr.room}</div>
-        </div>
-        <div className="grid-3" style={{gap:'8px'}}>
-          <button onClick={()=>{setStep(2);setCurr(null)}} className="btn btn-gray">← Back</button>
-          <button onClick={()=>{setForm({name:'',age:'',sex:'M',opd:'',diagnosis:'',procedure:'',isSeptic:false,fever:false,bleeding:false,pain:false,shock:false});setCurr(null);setStep(1)}} className="btn btn-gray">Reset</button>
-          <button onClick={confirm} disabled={loading} className="btn btn-green">{loading?'Saving...':'✅ Confirm'}</button>
-        </div>
-      </div>}
-
-      {tab==='queue'&&<div>
-        {patients.filter(p=>['registered','ready','in-progress'].includes(p.status)).length>0&&<div className="export-section">
-          <div className="flex justify-between items-center">
-            <div>
-              <div className="font-bold" style={{color:'#92400e'}}>Queue Management</div>
-              <div className="text-xs" style={{color:'#6b7280',marginTop:'2px'}}>Export queue status</div>
-            </div>
-            <div className="flex gap-2">
-              <button onClick={exportRegQueue} className="btn btn-orange">📤 Reg Queue</button>
-              <button onClick={exportQueue} className="btn btn-yellow">📤 Live Queue</button>
-            </div>
-          </div>
-        </div>}
-        
-        {patients.filter(p=>p.status==='registered').length>0&&<div className="queue-section">
-          <div className="queue-header">
-            <div className="queue-title">📝 Registration Queue</div>
-            <div style={{fontSize:'11px',fontWeight:'700',color:'#92400e'}}>{patients.filter(p=>p.status==='registered').length} waiting</div>
-          </div>
-          {patients.filter(p=>p.status==='registered').sort((a,b)=>new Date(a.time)-new Date(b.time)).map(p=>
-            <div key={p.docId} className="queue-item">
-              <div className="flex justify-between items-center">
-                <div className="flex gap-2 items-center">
-                  <div className="token" style={{fontSize:'16px'}}>{p.token}</div>
-                  <div><div className="font-bold">{p.name}</div><div className="text-xs">{p.age}/{p.sex}</div></div>
-                </div>
-                <div className="text-xs" style={{color:'#6b7280'}}>{new Date(p.time).toLocaleTimeString()}</div>
-              </div>
-            </div>
-          )}
-        </div>}
-        
-        {patients.filter(p=>p.status==='ready').length>0&&<div className="queue-section" style={{borderColor:'#86efac',background:'#f0fdf4'}}>
-          <div className="queue-header">
-            <div className="queue-title" style={{color:'#065f46'}}>✅ Ready Queue</div>
-            <div style={{fontSize:'11px',fontWeight:'700',color:'#065f46'}}>{patients.filter(p=>p.status==='ready').length} ready</div>
-          </div>
-          {patients.filter(p=>p.status==='ready').sort((a,b)=>new Date(a.time)-new Date(b.time)).map(p=>
-            <div key={p.docId} className="queue-item" style={{borderLeftColor:'#86efac'}}>
-              <div className="flex justify-between items-center">
-                <div className="flex gap-2 items-center">
-                  <div className="token token-routine" style={{fontSize:'16px'}}>{p.token}</div>
-                  <div><div className="font-bold">{p.name}</div><div className="text-xs">{p.room}</div></div>
-                </div>
-                <button onClick={()=>updateStatus(p.docId,'in-progress')} className="btn btn-purple" style={{padding:'4px 8px',fontSize:'10px'}}>Start →</button>
-              </div>
-            </div>
-          )}
-        </div>}
-        
-        {patients.filter(p=>p.status==='in-progress').length>0&&<div className="queue-section" style={{borderColor:'#d8b4fe',background:'#faf5ff'}}>
-          <div className="queue-header">
-            <div className="queue-title" style={{color:'#6b21a8'}}>🔄 In Progress</div>
-            <div style={{fontSize:'11px',fontWeight:'700',color:'#6b21a8'}}>{patients.filter(p=>p.status==='in-progress').length} ongoing</div>
-          </div>
-          {patients.filter(p=>p.status==='in-progress').sort((a,b)=>new Date(a.time)-new Date(b.time)).map(p=>
-            <div key={p.docId} className="queue-item" style={{borderLeftColor:'#d8b4fe'}}>
-              <div className="flex justify-between items-center">
-                <div className="flex gap-2 items-center">
-                  <div className="token token-urgent" style={{fontSize:'16px'}}>{p.token}</div>
-                  <div><div className="font-bold">{p.name}</div><div className="text-xs">{p.room}</div></div>
-                </div>
-                <button onClick={()=>updateStatus(p.docId,'completed')} className="btn btn-green" style={{padding:'4px 8px',fontSize:'10px'}}>Complete</button>
-              </div>
-            </div>
-          )}
-        </div>}
-        
-        {patients.length===0&&<div className="queue-empty">No patients in queue</div>}
-      </div>}
-
-      {tab==='preop'&&<div>
-        {patients.length>0&&
-          <div className="export-section">
-            <div className="flex justify-between items-center">
-              <div>
-                <div className="font-bold" style={{color:'#065f46'}}>Pre-Op Checklist Export</div>
-                <div className="text-xs" style={{color:'#6b7280',marginTop:'2px'}}>Share pre-op summary</div>
-              </div>
-              <button onClick={exportRegQueue} className="btn btn-green">📤 WhatsApp</button>
-            </div>
-          </div>
-        }
-        {patients.map(p=>{
-          const c=Object.values(p.preOp).filter(v=>v).length;
-          const a=c===6||p.preOpNA;
-          return<div key={p.docId} className="patient-card">
-            <div className="flex justify-between mb-2">
-              <div className="flex gap-2 items-center">
-                <div className={`token ${p.priority==='urgent'?'token-urgent':'token-routine'}`}>{p.token}</div>
-                <div><div className="font-bold">{p.name}</div><div className="text-xs" style={{color:'#6b7280'}}>{p.age}/{p.sex} • {p.opd}</div></div>
-              </div>
-              <div className="action-buttons">
-                <div className={`status-badge status-${p.status}`}>{p.status.toUpperCase()}</div>
-                <button onClick={()=>editPatient(p)} className="btn btn-orange" style={{fontSize:'10px',padding:'4px 6px'}}>✏️</button>
-                <button onClick={()=>deletePatient(p.docId)} className="btn btn-red" style={{fontSize:'10px',padding:'4px 6px'}}>🗑️</button>
-              </div>
-            </div>
-            <div className="checklist">
-              <div className="checklist-header">
-                <span className="checklist-title">Pre-Op</span>
-                <div style={{display:'flex',gap:'4px',alignItems:'center'}}>
-                  <span className={`checklist-count ${p.preOpNA?'btn-green':a?'btn-green':'btn-yellow'}`}>{p.preOpNA?'N/A':c}/6</span>
-                  <button onClick={()=>updatePreOp(p.docId,'preOpNA',!p.preOpNA)} className={`btn ${p.preOpNA?'btn-orange':'btn-gray'}`} style={{fontSize:'10px',padding:'2px 6px'}}>N/A</button>
-                </div>
-              </div>
-              {!p.preOpNA?<div className="checklist-items">
-                {[{k:'allergies',l:'Allergies'},{k:'tt',l:'TT'},{k:'testDose',l:'Test'},{k:'attender',l:'Attender'},{k:'ornaments',l:'Ornaments'},{k:'consent',l:'Consent'}].map(i=>
-                  <label key={i.k} className="checklist-item">
-                    <input type="checkbox" checked={p.preOp[i.k]} onChange={e=>updatePreOp(p.docId,i.k,e.target.checked)} className="checkbox"/>
-                    {i.l}
-                  </label>
-                )}
-              </div>:<div style={{padding:'8px',fontSize:'12px',fontWeight:'700',color:'#059669',textAlign:'center'}}>✅ Marked as N/A</div>}
-            </div>
-            <div className="grid-3" style={{marginTop:'8px',gap:'4px'}}>
-              <button onClick={()=>updateStatus(p.docId,'registered')} className={`btn ${p.status==='registered'?'btn-yellow':'btn-gray'}`}>Reg</button>
-              <button onClick={()=>updateStatus(p.docId,'ready')} disabled={!a} className={`btn ${p.status==='ready'?'btn-green':p.status==='registered'&&a?'btn-green':'btn-gray'}`}>Ready</button>
-              <button onClick={()=>updateStatus(p.docId,'in-progress')} disabled={p.status!=='ready'} className={`btn ${p.status==='in-progress'?'btn-purple':p.status==='ready'?'btn-purple':'btn-gray'}`}>Start</button>
-            </div>
-          </div>
-        })}
-      </div>}
-
-      {tab==='postop'&&<div>
-        {patients.length>0&&
-          <div className="export-section">
-            <div className="flex justify-between items-center">
-              <div>
-                <div className="font-bold" style={{color:'#065f46'}}>Daily Census Export</div>
-                <div className="text-xs" style={{color:'#6b7280',marginTop:'2px'}}>Complete summary of all cases</div>
-              </div>
-              <button onClick={exportDayCensus} className="btn btn-green">📤 WhatsApp</button>
-            </div>
-          </div>
-        }
-        {patients.map(p=>{
-          const po=Object.values(p.postOp).filter(v=>v).length,pc=po===4||p.postOpNA;
-          return<div key={p.docId} className="patient-card">
-            <div className="flex justify-between mb-2">
-              <div className="flex gap-2 items-center">
-                <div className={`token ${p.priority==='urgent'?'token-urgent':'token-routine'}`}>{p.token}</div>
-                <div><div className="font-bold">{p.name}</div><div className="text-xs" style={{color:'#6b7280'}}>{p.age}/{p.sex}</div></div>
-              </div>
-              <div className="action-buttons">
-                <div className={`status-badge status-${p.status}`}>{p.status.toUpperCase()}</div>
-                <button onClick={()=>editPatient(p)} className="btn btn-orange" style={{fontSize:'10px',padding:'4px 6px'}}>✏️</button>
-                <button onClick={()=>deletePatient(p.docId)} className="btn btn-red" style={{fontSize:'10px',padding:'4px 6px'}}>🗑️</button>
-              </div>
-            </div>
-            {p.status==='in-progress'&&<div className="postop-checklist checklist" style={{marginBottom:'8px'}}>
-              <div className="checklist-header">
-                <span className="checklist-title">Post-Op</span>
-                <div style={{display:'flex',gap:'4px',alignItems:'center'}}>
-                  <span className={`checklist-count ${p.postOpNA?'btn-purple':pc?'btn-purple':'btn-yellow'}`}>{p.postOpNA?'N/A':po}/4</span>
-                  <button onClick={()=>updatePostOp(p.docId,'postOpNA',!p.postOpNA)} className={`btn ${p.postOpNA?'btn-purple':'btn-gray'}`} style={{fontSize:'10px',padding:'2px 6px'}}>N/A</button>
-                </div>
-              </div>
-              {!p.postOpNA?<div className="checklist-items">
-                {[{k:'otNotes',l:'OT Notes'},{k:'hpe',l:'HPE'},{k:'pusCulture',l:'Culture'},{k:'prescription',l:'Rx'}].map(i=>
-                  <label key={i.k} className="checklist-item">
-                    <input type="checkbox" checked={p.postOp[i.k]} onChange={e=>updatePostOp(p.docId,i.k,e.target.checked)} className="checkbox"/>
-                    {i.l}
-                  </label>
-                )}
-              </div>:<div style={{padding:'8px',fontSize:'12px',fontWeight:'700',color:'#7c3aed',textAlign:'center'}}>✅ Marked as N/A</div>}
-            </div>}
-            <div className="grid-4" style={{gap:'4px'}}>
-              <button onClick={()=>updateStatus(p.docId,'registered')} className={`btn ${p.status==='registered'?'btn-yellow':'btn-gray'}`}>Reg</button>
-              <button onClick={()=>updateStatus(p.docId,'ready')} className={`btn ${p.status==='ready'?'btn-green':'btn-gray'}`}>Ready</button>
-              <button onClick={()=>updateStatus(p.docId,'in-progress')} className={`btn ${p.status==='in-progress'?'btn-purple':'btn-gray'}`}>Prog</button>
-              <button onClick={()=>updateStatus(p.docId,'completed')} disabled={!pc} className={`btn ${p.status==='completed'?'btn-gray':pc?'btn-green':'btn-gray'}`}>Done</button>
-            </div>
-          </div>
-        })}
-      </div>}
-
-      {tab==='stats'&&<div>
-        <div className="card">
-          <div style={{marginBottom:'12px',fontWeight:'700',fontSize:'14px'}}>📊 Statistics</div>
-          <div className="grid-2" style={{gap:'8px',marginBottom:'12px'}}>
-            <div className="stat stat-blue" style={{padding:'12px'}}>
-              <div className="stat-value">{septic}</div>
-              <div className="stat-label">Septic Cases</div>
-              <div className="text-xs" style={{marginTop:'4px',color:'#1e40af'}}>Dressing Room</div>
-            </div>
-            <div className="stat stat-green" style={{padding:'12px'}}>
-              <div className="stat-value">{nonSeptic}</div>
-              <div className="stat-label">Non-Septic</div>
-              <div className="text-xs" style={{marginTop:'4px',color:'#065f46'}}>Minor OT</div>
-            </div>
-          </div>
-          <div className="grid-2" style={{gap:'8px'}}>
-            <div style={{background:'#dbeafe',padding:'12px',borderRadius:'8px',textAlign:'center',border:'1px solid #bfdbfe'}}>
-              <div style={{fontSize:'16px',fontWeight:'700',color:'#1e40af'}}>{patients.filter(p=>p.status==='completed').length}</div>
-              <div style={{fontSize:'11px',fontWeight:'500',color:'#1e40af',marginTop:'4px'}}>Completed Today</div>
-            </div>
-            <div style={{background:'#fef3c7',padding:'12px',borderRadius:'8px',textAlign:'center',border:'1px solid #fde68a'}}>
-              <div style={{fontSize:'16px',fontWeight:'700',color:'#92400e'}}>{patients.filter(p=>p.status!=='completed').length}</div>
-              <div style={{fontSize:'11px',fontWeight:'500',color:'#92400e',marginTop:'4px'}}>Pending</div>
-            </div>
-          </div>
-        </div>
-      </div>}
-
-      {editingPatient&&<div className="modal" onClick={()=>setEditingPatient(null)}>
-        <div className="modal-content" onClick={e=>e.stopPropagation()}>
-          <div className="modal-header">✏️ Edit Patient - {editingPatient.token}</div>
-          <div className="form-group">
-            <label className="text-sm font-bold" style={{display:'block',marginBottom:'4px'}}>Name</label>
-            <input type="text" value={editingPatient.name} onChange={e=>setEditingPatient({...editingPatient,name:e.target.value})} className="form-input"/>
-          </div>
-          <div className="grid-3 mb-3">
-            <div>
-              <label className="text-sm font-bold" style={{display:'block',marginBottom:'4px'}}>Age</label>
-              <input type="number" value={editingPatient.age} onChange={e=>setEditingPatient({...editingPatient,age:e.target.value})} className="form-input"/>
-            </div>
-            <div>
-              <label className="text-sm font-bold" style={{display:'block',marginBottom:'4px'}}>Sex</label>
-              <select value={editingPatient.sex} onChange={e=>setEditingPatient({...editingPatient,sex:e.target.value})} className="form-input">
-                <option value="M">Male</option><option value="F">Female</option><option value="O">Other</option>
-              </select>
-            </div>
-            <div>
-              <label className="text-sm font-bold" style={{display:'block',marginBottom:'4px'}}>OPD</label>
-              <input type="text" value={editingPatient.opd} onChange={e=>setEditingPatient({...editingPatient,opd:e.target.value})} className="form-input"/>
-            </div>
-          </div>
-          <div className="form-group">
-            <label className="text-sm font-bold" style={{display:'block',marginBottom:'4px'}}>Diagnosis</label>
-            <input type="text" value={editingPatient.diagnosis} onChange={e=>setEditingPatient({...editingPatient,diagnosis:e.target.value})} className="form-input"/>
-          </div>
-          <div className="form-group">
-            <label className="text-sm font-bold" style={{display:'block',marginBottom:'4px'}}>Procedure</label>
-            <input type="text" value={editingPatient.procedure} onChange={e=>setEditingPatient({...editingPatient,procedure:e.target.value})} className="form-input"/>
-          </div>
-          <div className="form-group">
-            <label className="text-sm font-bold" style={{display:'block',marginBottom:'4px'}}>Red Flags</label>
-            <div className="grid-2" style={{gap:'8px'}}>
-              {[{k:'fever',l:'Fever'},{k:'bleeding',l:'Bleeding'},{k:'pain',l:'Severe Pain'},{k:'shock',l:'Shock'}].map(f=>
-                <label key={f.k} className="flex items-center gap-2">
-                  <input type="checkbox" checked={editingPatient[f.k]} onChange={e=>setEditingPatient({...editingPatient,[f.k]:e.target.checked})} className="checkbox"/>
-                  <span className="text-sm">{f.l}</span>
-                </label>
-              )}
-            </div>
-          </div>
-          <div className="grid-2" style={{gap:'8px',marginTop:'16px'}}>
-            <button onClick={()=>setEditingPatient(null)} className="btn btn-gray">Cancel</button>
-            <button onClick={saveEdit} disabled={loading} className="btn btn-blue">{loading?'Saving...':'💾 Save Changes'}</button>
-          </div>
-        </div>
-      </div>}
-    </div>
-  );
+📊 SUMMARY
+Total Cases: ${patients.length}
+Septic: ${septic} | Non-Septic: ${nonseptic}
+Registered: ${patients.filter(p=>p.status==='registered').length}
+Ready: ${patients.filter(p=>p.status==='ready').length}
+In Progress: ${patients.filter(p=>p.status==='in-progress').length}
+Completed: ${patients.filter(p=>p.status==='completed').length}`;
+window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`,'_blank');
+};
+const stats={total:patients.length,reg:patients.filter(p=>p.status==='registered').length,ready:patients.filter(p=>p.status==='ready').length,prog:patients.filter(p=>p.status==='in-progress').length,done:patients.filter(p=>p.status==='completed').length};
+const registeredQueue=patients.filter(p=>p.status==='registered');
+return(<div className="container">
+<div className="card">
+<div className="header">
+<div><div className="title">Minor OT</div><div className="date">{new Date().toLocaleDateString()}</div></div>
+<div className="flex gap-2 items-center">
+<span className={`sync-badge sync-${syncStatus}`}><span className="sync-dot"></span>{syncLabel}</span>
+<button onClick={clearAll} className="btn btn-red">🗑️ Clear All Data</button>
+</div>
+</div>
+<div className="tabs">
+<button onClick={()=>setTab('reg')} className={`btn ${tab==='reg'?'btn-blue':'btn-gray'}`}>Registration</button>
+<button onClick={()=>setTab('preop')} className={`btn ${tab==='preop'?'btn-green':'btn-gray'}`}>Pre-Op</button>
+<button onClick={()=>setTab('postop')} className={`btn ${tab==='postop'?'btn-purple':'btn-gray'}`}>List</button>
+</div>
+<div className="stats">
+<div className="stat stat-blue"><div className="stat-value">{stats.total}</div><div className="stat-label">Total</div></div>
+<div className="stat stat-yellow"><div className="stat-value">{stats.reg}</div><div className="stat-label">Reg</div></div>
+<div className="stat stat-green"><div className="stat-value">{stats.ready}</div><div className="stat-label">Ready</div></div>
+<div className="stat stat-purple"><div className="stat-value">{stats.prog}</div><div className="stat-label">Progress</div></div>
+<div className="stat stat-gray"><div className="stat-value">{stats.done}</div><div className="stat-label">Done</div></div>
+</div>
+</div>
+{tab==='reg'&&<div className="card">
+{step===1&&<div>
+<h2 className="font-bold mb-3">Patient Info</h2>
+<div className="form-group"><input type="text" placeholder="Name" value={form.name} onChange={e=>setForm({...form,name:e.target.value})} className="form-input"/></div>
+<div className="grid-3 mb-3">
+<input type="number" placeholder="Age" value={form.age} onChange={e=>setForm({...form,age:e.target.value})} className="form-input"/>
+<select value={form.sex} onChange={e=>setForm({...form,sex:e.target.value})} className="form-input">
+<option value="M">Male</option><option value="F">Female</option><option value="O">Other</option>
+</select>
+<input type="text" placeholder="OPD" value={form.opd} onChange={e=>setForm({...form,opd:e.target.value})} className="form-input"/>
+</div>
+<div className="form-group"><input type="text" placeholder="Diagnosis" value={form.diagnosis} onChange={e=>setForm({...form,diagnosis:e.target.value})} className="form-input"/></div>
+<div className="form-group"><input type="text" placeholder="Procedure" value={form.procedure} onChange={e=>setForm({...form,procedure:e.target.value})} className="form-input"/></div>
+<button onClick={next1} className="btn btn-blue w-full">Next</button>
+</div>}
+{step===2&&<div>
+<h2 className="font-bold mb-3">Triage</h2>
+<div className="grid-2 mb-3">
+<button onClick={()=>setForm({...form,isSeptic:false})} className={`btn ${!form.isSeptic?'btn-green':'btn-gray'}`} style={{padding:'12px'}}>🟢 NON-SEPTIC</button>
+<button onClick={()=>setForm({...form,isSeptic:true})} className={`btn ${form.isSeptic?'btn-red':'btn-gray'}`} style={{padding:'12px'}}>🔴 SEPTIC</button>
+</div>
+<div className="bg-red-50 border-red p-3 rounded mb-3">
+<p className="font-bold text-sm mb-2">Red Flags</p>
+{[{k:'fever',l:'Fever'},{k:'bleeding',l:'Bleeding'},{k:'pain',l:'Severe Pain'},{k:'shock',l:'Shock'}].map(f=>
+<label key={f.k} className="flex items-center gap-2 text-sm mb-2">
+<input type="checkbox" checked={form[f.k]} onChange={e=>setForm({...form,[f.k]:e.target.checked})} className="checkbox"/>
+{f.l}
+</label>
+)}
+</div>
+<div className="flex gap-2">
+<button onClick={()=>setStep(1)} className="btn btn-gray">Back</button>
+<button onClick={next2} className="btn btn-blue" style={{flex:1}}>Generate Token</button>
+</div>
+</div>}
+{step===3&&curr&&<div>
+<div style={{textAlign:'center',marginBottom:'12px'}}>
+<div className="token-big">{curr.token}</div>
+</div>
+<div className="bg-blue-50 border-blue p-3 rounded mb-3">
+<div className="grid-2" style={{fontSize:'14px',gap:'8px'}}>
+<div><span style={{color:'#6b7280'}}>Name:</span> <b>{curr.name}</b></div>
+<div><span style={{color:'#6b7280'}}>Age/Sex:</span> <b>{curr.age}/{curr.sex}</b></div>
+<div><span style={{color:'#6b7280'}}>OPD:</span> <b>{curr.opd}</b></div>
+<div><span style={{color:'#6b7280'}}>Room:</span> <b>{curr.room}</b></div>
+<div><span style={{color:'#6b7280'}}>Diagnosis:</span> <b>{curr.diagnosis}</b></div>
+<div><span style={{color:'#6b7280'}}>Procedure:</span> <b>{curr.procedure}</b></div>
+</div>
+</div>
+<div className="grid-3 mb-2">
+<button onClick={()=>exportSingleReg(curr)} className="btn btn-green">📤 WhatsApp</button>
+<button onClick={confirm} disabled={saving} className="btn btn-blue">{saving?'Saving...':'Add to Queue'}</button>
+<button onClick={()=>{resetForm();setCurr(null);setStep(1)}} className="btn btn-gray">New</button>
+</div>
+</div>}
+{step===1&&<div className="queue-section">
+<div className="queue-header">
+<div className="queue-title">📋 Registered Queue ({registeredQueue.length})</div>
+{registeredQueue.length>0&&<button onClick={exportRegQueue} className="btn btn-green" style={{fontSize:'11px'}}>📤 Export All</button>}
+</div>
+{registeredQueue.length===0?
+<div className="queue-empty">No registered patients yet</div>
+:
+registeredQueue.map(p=>
+<div key={p.id} className="queue-item">
+<div className="flex justify-between items-center mb-1">
+<div className="flex items-center gap-2">
+<span className={`token ${p.priority==='urgent'?'token-urgent':'token-routine'}`} style={{fontSize:'14px',padding:'2px 6px'}}>{p.token}</span>
+<div>
+<span className="font-bold" style={{fontSize:'13px'}}>{p.name}</span>
+<span className="text-xs" style={{color:'#6b7280',marginLeft:'6px'}}>{p.age}/{p.sex}</span>
+</div>
+</div>
+<div className="action-buttons">
+<button onClick={()=>exportSingleReg(p)} className="btn btn-green" style={{fontSize:'10px',padding:'4px 8px'}}>📤</button>
+<button onClick={()=>editPatient(p)} className="btn btn-orange" style={{fontSize:'10px',padding:'4px 8px'}}>✏️</button>
+<button onClick={()=>del(p.id)} className="btn btn-red" style={{fontSize:'10px',padding:'4px 8px'}}>🗑️</button>
+</div>
+</div>
+<div className="text-xs" style={{color:'#374151',marginTop:'3px'}}>{p.diagnosis}</div>
+</div>
+)
 }
-
+</div>}
+</div>}
+{tab==='preop'&&<div>
+{patients.filter(p=>['registered','ready'].includes(p.status)).length>0&&
+<div className="export-section">
+<div className="flex justify-between items-center">
+<span className="font-bold" style={{color:'#065f46'}}>Pre-Op Queue Export</span>
+<button onClick={exportPreOpQueue} className="btn btn-green">📤 WhatsApp</button>
+</div>
+</div>
+}
+{patients.filter(p=>['registered','ready'].includes(p.status)).map(p=>{
+const c=Object.values(p.preOp).filter(v=>v).length,a=c===6;
+return<div key={p.id} className="patient-card">
+<div className="flex justify-between mb-2">
+<div className="flex gap-2 items-center">
+<div className={`token ${p.priority==='urgent'?'token-urgent':'token-routine'}`}>{p.token}</div>
+<div><div className="font-bold">{p.name}</div><div className="text-xs" style={{color:'#6b7280'}}>{p.age}/{p.sex} • {p.opd}</div></div>
+</div>
+<div className="action-buttons">
+<div className={`status-badge status-${p.status}`}>{p.status.toUpperCase()}</div>
+<button onClick={()=>editPatient(p)} className="btn btn-orange" style={{fontSize:'10px',padding:'4px 6px'}}>✏️</button>
+<button onClick={()=>del(p.id)} className="btn btn-red" style={{fontSize:'10px',padding:'4px 6px'}}>🗑️</button>
+</div>
+</div>
+<div className="checklist">
+<div className="checklist-header">
+<span className="checklist-title">Pre-Op</span>
+<span className={`checklist-count ${a?'btn-green':'btn-yellow'}`}>{c}/6</span>
+</div>
+<div className="checklist-items">
+{[{k:'allergies',l:'Allergies'},{k:'tt',l:'TT'},{k:'testDose',l:'Test'},{k:'attender',l:'Attender'},{k:'ornaments',l:'Ornaments'},{k:'consent',l:'Consent'}].map(i=>
+<label key={i.k} className="checklist-item">
+<input type="checkbox" checked={p.preOp[i.k]} onChange={e=>updatePre(p.id,i.k,e.target.checked)} className="checkbox"/>
+{i.l}
+</label>
+)}
+</div>
+</div>
+<div className="grid-3" style={{marginTop:'8px',gap:'4px'}}>
+<button onClick={()=>updateStatus(p.id,'registered')} className={`btn ${p.status==='registered'?'btn-yellow':'btn-gray'}`}>Reg</button>
+<button onClick={()=>updateStatus(p.id,'ready')} disabled={!a} className={`btn ${p.status==='ready'?'btn-green':a?'btn-gray':'btn-gray'}`}>Ready</button>
+<button onClick={()=>updateStatus(p.id,'in-progress')} disabled={!a} className={`btn ${a?'btn-purple':'btn-gray'}`}>Start</button>
+</div>
+</div>
+})}
+</div>}
+{tab==='postop'&&<div>
+{patients.length>0&&
+<div className="export-section">
+<div className="flex justify-between items-center">
+<div>
+<div className="font-bold" style={{color:'#065f46'}}>Daily Census Export</div>
+<div className="text-xs" style={{color:'#6b7280',marginTop:'2px'}}>Complete summary of all cases</div>
+</div>
+<button onClick={exportDayCensus} className="btn btn-green">📤 WhatsApp</button>
+</div>
+</div>
+}
+{patients.map(p=>{
+const po=Object.values(p.postOp).filter(v=>v).length,pc=po===4;
+return<div key={p.id} className="patient-card">
+<div className="flex justify-between mb-2">
+<div className="flex gap-2 items-center">
+<div className={`token ${p.priority==='urgent'?'token-urgent':'token-routine'}`}>{p.token}</div>
+<div><div className="font-bold">{p.name}</div><div className="text-xs" style={{color:'#6b7280'}}>{p.age}/{p.sex}</div></div>
+</div>
+<div className="action-buttons">
+<div className={`status-badge status-${p.status}`}>{p.status.toUpperCase()}</div>
+<button onClick={()=>editPatient(p)} className="btn btn-orange" style={{fontSize:'10px',padding:'4px 6px'}}>✏️</button>
+<button onClick={()=>del(p.id)} className="btn btn-red" style={{fontSize:'10px',padding:'4px 6px'}}>🗑️</button>
+</div>
+</div>
+{p.status==='in-progress'&&<div className="postop-checklist checklist" style={{marginBottom:'8px'}}>
+<div className="checklist-header">
+<span className="checklist-title">Post-Op</span>
+<span className={`checklist-count ${pc?'btn-purple':'btn-yellow'}`}>{po}/4</span>
+</div>
+<div className="checklist-items">
+{[{k:'otNotes',l:'OT Notes'},{k:'hpe',l:'HPE'},{k:'pusCulture',l:'Culture'},{k:'prescription',l:'Rx'}].map(i=>
+<label key={i.k} className="checklist-item">
+<input type="checkbox" checked={p.postOp[i.k]} onChange={e=>updatePost(p.id,i.k,e.target.checked)} className="checkbox"/>
+{i.l}
+</label>
+)}
+</div>
+</div>}
+<div className="grid-4" style={{gap:'4px'}}>
+<button onClick={()=>updateStatus(p.id,'registered')} className={`btn ${p.status==='registered'?'btn-yellow':'btn-gray'}`}>Reg</button>
+<button onClick={()=>updateStatus(p.id,'ready')} className={`btn ${p.status==='ready'?'btn-green':'btn-gray'}`}>Ready</button>
+<button onClick={()=>updateStatus(p.id,'in-progress')} className={`btn ${p.status==='in-progress'?'btn-purple':'btn-gray'}`}>Prog</button>
+<button onClick={()=>updateStatus(p.id,'completed')} disabled={!pc} className={`btn ${p.status==='completed'?'btn-gray':pc?'btn-gray':'btn-gray'}`}>Done</button>
+</div>
+</div>
+})}
+</div>}
+{editingPatient&&<div className="modal" onClick={()=>setEditingPatient(null)}>
+<div className="modal-content" onClick={e=>e.stopPropagation()}>
+<div className="modal-header">✏️ Edit Patient - {editingPatient.token}</div>
+<div className="form-group">
+<label className="text-sm font-bold" style={{display:'block',marginBottom:'4px'}}>Name</label>
+<input type="text" value={editingPatient.name} onChange={e=>setEditingPatient({...editingPatient,name:e.target.value})} className="form-input"/>
+</div>
+<div className="grid-3 mb-3">
+<div>
+<label className="text-sm font-bold" style={{display:'block',marginBottom:'4px'}}>Age</label>
+<input type="number" value={editingPatient.age} onChange={e=>setEditingPatient({...editingPatient,age:e.target.value})} className="form-input"/>
+</div>
+<div>
+<label className="text-sm font-bold" style={{display:'block',marginBottom:'4px'}}>Sex</label>
+<select value={editingPatient.sex} onChange={e=>setEditingPatient({...editingPatient,sex:e.target.value})} className="form-input">
+<option value="M">Male</option><option value="F">Female</option><option value="O">Other</option>
+</select>
+</div>
+<div>
+<label className="text-sm font-bold" style={{display:'block',marginBottom:'4px'}}>OPD</label>
+<input type="text" value={editingPatient.opd} onChange={e=>setEditingPatient({...editingPatient,opd:e.target.value})} className="form-input"/>
+</div>
+</div>
+<div className="form-group">
+<label className="text-sm font-bold" style={{display:'block',marginBottom:'4px'}}>Diagnosis</label>
+<input type="text" value={editingPatient.diagnosis} onChange={e=>setEditingPatient({...editingPatient,diagnosis:e.target.value})} className="form-input"/>
+</div>
+<div className="form-group">
+<label className="text-sm font-bold" style={{display:'block',marginBottom:'4px'}}>Procedure</label>
+<input type="text" value={editingPatient.procedure} onChange={e=>setEditingPatient({...editingPatient,procedure:e.target.value})} className="form-input"/>
+</div>
+<div className="form-group">
+<label className="text-sm font-bold" style={{display:'block',marginBottom:'4px'}}>Red Flags</label>
+<div className="grid-2" style={{gap:'8px'}}>
+{[{k:'fever',l:'Fever'},{k:'bleeding',l:'Bleeding'},{k:'pain',l:'Severe Pain'},{k:'shock',l:'Shock'}].map(f=>
+<label key={f.k} className="flex items-center gap-2">
+<input type="checkbox" checked={editingPatient[f.k]} onChange={e=>setEditingPatient({...editingPatient,[f.k]:e.target.checked})} className="checkbox"/>
+<span className="text-sm">{f.l}</span>
+</label>
+)}
+</div>
+</div>
+<div className="grid-2" style={{gap:'8px',marginTop:'16px'}}>
+<button onClick={()=>setEditingPatient(null)} className="btn btn-gray">Cancel</button>
+<button onClick={saveEdit} className="btn btn-blue">💾 Save Changes</button>
+</div>
+</div>
+</div>}
+</div>)}
 ReactDOM.render(<App/>,document.getElementById('root'));
 </script>
 </body>
