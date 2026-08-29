@@ -8,38 +8,22 @@ const firebaseConfig = {
   appId: "1:240851011199:web:3c3cf35c56751849eb214a"
 };
 
-// SEZNIK B21 direct Bluetooth diagnostic/test printer bridge.
+// SEZNIK / iPrint-style BLE printer bridge.
 (function(){
 'use strict';
-const OPTIONAL=['0000ae30-0000-1000-8000-00805f9b34fb','0000ff00-0000-1000-8000-00805f9b34fb','000018f0-0000-1000-8000-00805f9b34fb'];
-let device=null,tx=null;
-function msg(text,ok=true){let e=document.getElementById('b21-print-msg');if(!e){e=document.createElement('div');e.id='b21-print-msg';e.style.cssText='position:fixed;left:16px;right:16px;bottom:18px;z-index:999999;padding:14px 16px;border-radius:16px;background:#166534;color:#fff;font:700 15px system-ui;text-align:center;box-shadow:0 8px 30px rgba(0,0,0,.3)';document.body.appendChild(e)}e.style.background=ok?'#166534':'#991b1b';e.textContent=text;clearTimeout(e._timer);e._timer=setTimeout(()=>e.remove(),8000)}
+const AE30='0000ae30-0000-1000-8000-00805f9b34fb';
+const AE01='0000ae01-0000-1000-8000-00805f9b34fb';
+const AE02='0000ae02-0000-1000-8000-00805f9b34fb';
+const FF02='0000ff02-0000-1000-8000-00805f9b34fb';
+const OPTIONAL=[AE30,AE02,'0000ae3a-0000-1000-8000-00805f9b34fb','0000ae3b-0000-1000-8000-00805f9b34fb','0000ff00-0000-1000-8000-00805f9b34fb',FF02];
+let device=null,tx=null,rx=null;
+function msg(text,ok=true){let e=document.getElementById('b21-print-msg');if(!e){e=document.createElement('div');e.id='b21-print-msg';e.style.cssText='position:fixed;left:16px;right:16px;bottom:18px;z-index:999999;padding:14px 16px;border-radius:16px;background:#166534;color:#fff;font:700 15px system-ui;text-align:center;box-shadow:0 8px 30px rgba(0,0,0,.3)';document.body.appendChild(e)}e.style.background=ok?'#166534':'#991b1b';e.textContent=text;clearTimeout(e._timer);e._timer=setTimeout(()=>e.remove(),9000)}
 function addButton(){if(document.getElementById('b21-direct-print'))return;const b=document.createElement('button');b.id='b21-direct-print';b.type='button';b.textContent='🖨️ Print';b.style.cssText='position:fixed;right:16px;bottom:16px;z-index:999998;border:0;border-radius:30px;padding:16px 24px;background:#2563eb;color:#fff;font:800 17px system-ui;box-shadow:0 6px 22px rgba(0,0,0,.25);touch-action:manipulation';b.addEventListener('click',startPrintFromUserGesture);document.body.appendChild(b)}
-async function startPrintFromUserGesture(){try{
- if(!navigator.bluetooth)throw new Error('Web Bluetooth is not supported. Use Chrome on Android.');
- msg('Select your SEZNIK B21…');
- const d=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:OPTIONAL});
- device=d; msg('Connecting to '+(d.name||'Bluetooth printer')+'…');
- const server=await d.gatt.connect();
- const services=await server.getPrimaryServices();
- let candidates=[];
- for(const s of services){try{const chars=await s.getCharacteristics();chars.filter(c=>c.properties.write||c.properties.writeWithoutResponse).forEach(c=>candidates.push({s,c}));}catch(e){}}
- if(!candidates.length)throw new Error('Connected, but no writable BLE characteristic was found.');
- const preferred=candidates.find(x=>/ae01|ff02|ff02/i.test(x.c.uuid))||candidates[0];
- tx=preferred.c;
- console.log('B21 writable candidates:',candidates.map(x=>({service:x.s.uuid,characteristic:x.c.uuid,properties:x.c.properties})));
- msg('Connected. Sending printer test…');
- // Generic ESC/POS smoke test. This is deliberately tiny: it tells us whether
- // the discovered writable BLE channel actually drives the print engine.
- const data=new TextEncoder().encode('\x1B\x40\nMINOR OT\nBLUETOOTH TEST\n\n\n');
- const chunk=20;
- for(let i=0;i<data.length;i+=chunk){
-   const part=data.slice(i,i+chunk);
-   if(tx.properties.writeWithoutResponse) await tx.writeValueWithoutResponse(part);
-   else await tx.writeValue(part);
-   await new Promise(r=>setTimeout(r,40));
- }
- msg('Test data sent on '+tx.uuid+'. Check the printer.');
- }catch(e){console.error(e);msg('Bluetooth/print test failed: '+(e.message||e),false)}}
+function crc8(data){let crc=0;for(const v of data){crc^=v;for(let i=0;i<8;i++)crc=(crc&0x80)?((crc<<1)^0x07)&255:(crc<<1)&255;}return crc}
+function packet(cmd,payload=[]){const p=Array.from(payload);return new Uint8Array([0x51,0x78,cmd,0x00,p.length&255,(p.length>>8)&255,...p,crc8(p),0xff])}
+async function write(data){if(!tx)throw new Error('Printer write channel is not connected');const n=120;for(let i=0;i<data.length;i+=n){const c=data.slice(i,i+n);if(tx.properties.writeWithoutResponse&&tx.writeValueWithoutResponse)await tx.writeValueWithoutResponse(c);else await tx.writeValue(c);await new Promise(r=>setTimeout(r,35))}}
+function makeTestRows(){const width=384,height=120,canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;const ctx=canvas.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,width,height);ctx.fillStyle='#000';ctx.textAlign='center';ctx.textBaseline='middle';ctx.font='bold 34px Arial';ctx.fillText('MINOR OT',width/2,30);ctx.font='bold 24px Arial';ctx.fillText('TEST PRINT',width/2,68);ctx.font='20px Arial';ctx.fillText('OT-001',width/2,102);const im=ctx.getImageData(0,0,width,height).data,rows=[];for(let y=0;y<height;y++){const row=new Uint8Array(48);for(let x=0;x<width;x++){if(im[(y*width+x)*4]<160)row[x>>3]|=(1<<(x&7))}rows.push(row)}return rows}
+async function print5178Test(){msg('Preparing real bitmap print…');await write(new Uint8Array([0x51,0x78,0xa8,0x00,0x01,0x00,0x00,0x00,0xff,0x51,0x78,0xa3,0x00,0x01,0x00,0x00,0x00,0xff]));await write(packet(0xbb,[0x01]));await write(packet(0xa4,[0x33]));await write(packet(0xaf,[0x10,0x00]));await write(packet(0xbe,[0x00]));const start=new Uint8Array([0x51,0x78,0xa6,0x00,0x0b,0x00,0xaa,0x55,0x17,0x38,0x44,0x5f,0x5f,0x5f,0x44,0x38,0x2c,0xa1,0xff]);await write(start);const rows=makeTestRows();msg('Sending bitmap to SEZNIK…');for(const row of rows)await write(packet(0xa2,Array.from(row)));const end=new Uint8Array([0x51,0x78,0xa6,0x00,0x0b,0x00,0xaa,0x55,0x17,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x17,0x11,0xff]);await write(end);await write(packet(0xa1,[0x30,0x00]));msg('Bitmap sent. Check the paper.');}
+async function startPrintFromUserGesture(){try{if(!navigator.bluetooth)throw new Error('Web Bluetooth is not supported. Use Chrome on Android.');msg('Select your SEZNIK B21…');const d=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:OPTIONAL});device=d;msg('Connecting to '+(d.name||'Bluetooth printer')+'…');const server=await d.gatt.connect();const services=await server.getPrimaryServices();let candidates=[];for(const s of services){try{const chars=await s.getCharacteristics();chars.filter(c=>c.properties.write||c.properties.writeWithoutResponse).forEach(c=>candidates.push({s,c}))}catch(e){}}if(!candidates.length)throw new Error('Connected, but no writable BLE characteristic was found.');const preferred=candidates.find(x=>x.c.uuid.toLowerCase()===AE01)||candidates.find(x=>x.c.uuid.toLowerCase()===FF02)||candidates[0];tx=preferred.c;console.log('B21 writable candidates:',candidates.map(x=>({service:x.s.uuid,characteristic:x.c.uuid,properties:x.c.properties})));const notifySvc=services.find(s=>s.uuid.toLowerCase()===AE30);if(notifySvc){try{const chars=await notifySvc.getCharacteristics();rx=chars.find(c=>c.uuid.toLowerCase()===AE02&&c.properties.notify);if(rx){await rx.startNotifications();rx.addEventListener('characteristicvaluechanged',e=>console.log('Printer status',Array.from(new Uint8Array(e.target.value.buffer)).map(x=>x.toString(16).padStart(2,'0')).join(' ')))}}catch(e){}}if(tx.uuid.toLowerCase()!==AE01)throw new Error('The printer exposed '+tx.uuid+'. Connection works, but this is not the 0x5178 AE01 channel. Send me the exact characteristic shown here.');await print5178Test()}catch(e){console.error(e);msg('Bluetooth/print failed: '+(e.message||e),false)}}
 window.addEventListener('DOMContentLoaded',addButton);if(document.readyState!=='loading')addButton();window.b21PrintTest=startPrintFromUserGesture;
 })();
