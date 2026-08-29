@@ -8,7 +8,7 @@ const firebaseConfig = {
   appId: "1:240851011199:web:3c3cf35c56751849eb214a"
 };
 
-// SEZNIK B21 / iPrint-compatible BLE bridge (0x5178 protocol)
+// SEZNIK B21 direct BLE printing
 (function(){
 'use strict';
 const SERVICE='0000ae30-0000-1000-8000-00805f9b34fb',WRITE='0000ae01-0000-1000-8000-00805f9b34fb',NOTIFY='0000ae02-0000-1000-8000-00805f9b34fb';
@@ -19,13 +19,29 @@ function crc8(a){let c=0;for(const b of a){c^=b;for(let i=0;i<8;i++)c=(c&128)?((
 function pkt(cmd,payload){const p=Uint8Array.from(payload),o=new Uint8Array(8+p.length);o[0]=81;o[1]=120;o[2]=cmd;o[3]=0;o[4]=p.length&255;o[5]=(p.length>>8)&255;o.set(p,6);o[6+p.length]=crc8(p);o[7+p.length]=255;return o}
 const state=()=>pkt(163,[0]),quality=()=>pkt(164,[50]),energy=()=>pkt(175,[255,255]),apply=()=>pkt(190,[1]),start=()=>pkt(166,[170,85,23,56,68,95,95,95,68,56,44]),end=()=>pkt(166,[170,85,23,0,0,0,0,0,0,0,23]),feed=n=>pkt(189,[n]),paper=()=>pkt(161,[48,0]);
 function row(a){return pkt(162,a)}
-async function write(a){if(!tx)throw Error('Printer write characteristic unavailable.');try{await tx.writeValueWithoutResponse(a)}catch(e){if(tx.writeValue)await tx.writeValue(a);else throw e}await sleep(22)}
-async function connect(d){device=d;const s=await d.gatt.connect();const svc=await s.getPrimaryService(SERVICE);tx=await svc.getCharacteristic(WRITE);try{rx=await svc.getCharacteristic(NOTIFY);await rx.startNotifications();rx.addEventListener('characteristicvaluechanged',e=>{lastNotify=Array.from(new Uint8Array(e.target.value.buffer)).map(x=>x.toString(16).padStart(2,'0')).join('')})}catch(e){}d.addEventListener('gattserverdisconnected',()=>{tx=null;rx=null;device=null})}
-function makeCanvas(p){const c=document.createElement('canvas');c.width=W;const x=c.getContext('2d');const rows=[];const n='16px Arial,sans-serif',b='bold 18px Arial,sans-serif';const wrap=(s,f)=>{x.font=f;const z=String(s??'').split(/\\s+/),r=[];let l='';for(const w of z){const q=l?l+' '+w:w;if(!l||x.measureText(q).width<=364)l=q;else{r.push(l);l=w}}if(l)r.push(l);return r};const add=(s,f=n,cen=false)=>rows.push({s:String(s??''),f,cen});const flags=[p.fever&&'Fever',p.bleeding&&'Bleeding',p.pain&&'Severe Pain',p.shock&&'Shock'].filter(Boolean).join(', ')||'None';add('MINOR OT',b,true);add('--------------------------------',n,true);add('TOKEN: '+(p.token||''),b,true);[['Name',p.name],['Age/Sex',(p.age||'')+' / '+(p.sex||'')],['OPD',p.opd],['Diagnosis',p.diagnosis],['Procedure',p.procedure],['Type',p.isSeptic?'SEPTIC':'NON-SEPTIC'],['Room',p.room],['Priority',String(p.priority||'').toUpperCase()],['Red flags',flags]].forEach(([k,v])=>wrap(k+' : '+(v??''),n).forEach(q=>add(q)));add('--------------------------------',n,true);add('Please retain this token.',n,true);c.height=Math.max(80,rows.length*21+20);const g=c.getContext('2d',{willReadFrequently:true});g.fillStyle='#fff';g.fillRect(0,0,W,c.height);g.fillStyle='#000';g.textBaseline='top';let y=10;for(const r of rows){g.font=r.f;g.textAlign=r.cen?'center':'left';g.fillText(r.s,r.cen?W/2:10,y);y+=21}return c}
+async function write(a){if(!tx)throw Error('Printer write characteristic unavailable.');try{if(tx.writeValueWithoutResponse)await tx.writeValueWithoutResponse(a);else await tx.writeValue(a)}catch(e){if(tx.writeValue)await tx.writeValue(a);else throw e}await sleep(22)}
+async function connect(d){device=d;const s=await d.gatt.connect();let svc;try{svc=await s.getPrimaryService(SERVICE)}catch(e){const svcs=await s.getPrimaryServices();throw Error('B21 connected, but AE30 printer service was not found. Services found: '+svcs.map(x=>x.uuid).join(', '))}tx=await svc.getCharacteristic(WRITE);try{rx=await svc.getCharacteristic(NOTIFY);await rx.startNotifications();rx.addEventListener('characteristicvaluechanged',e=>{lastNotify=Array.from(new Uint8Array(e.target.value.buffer)).map(x=>x.toString(16).padStart(2,'0')).join('')})}catch(e){}d.addEventListener('gattserverdisconnected',()=>{tx=null;rx=null;device=null})}
+function makeCanvas(p){const c=document.createElement('canvas');c.width=W;const x=c.getContext('2d');const rows=[];const n='16px Arial,sans-serif',b='bold 18px Arial,sans-serif';const wrap=(s,f)=>{x.font=f;const z=String(s??'').split(/\s+/),r=[];let l='';for(const w of z){const q=l?l+' '+w:w;if(!l||x.measureText(q).width<=364)l=q;else{r.push(l);l=w}}if(l)r.push(l);return r};const add=(s,f=n,cen=false)=>rows.push({s:String(s??''),f,cen});const flags=[p.fever&&'Fever',p.bleeding&&'Bleeding',p.pain&&'Severe Pain',p.shock&&'Shock'].filter(Boolean).join(', ')||'None';add('MINOR OT',b,true);add('--------------------------------',n,true);add('TOKEN: '+(p.token||''),b,true);[['Name',p.name],['Age/Sex',(p.age||'')+' / '+(p.sex||'')],['OPD',p.opd],['Diagnosis',p.diagnosis],['Procedure',p.procedure],['Type',p.isSeptic?'SEPTIC':'NON-SEPTIC'],['Room',p.room],['Priority',String(p.priority||'').toUpperCase()],['Red flags',flags]].forEach(([k,v])=>wrap(k+' : '+(v??''),n).forEach(q=>add(q)));add('--------------------------------',n,true);add('Please retain this token.',n,true);c.height=Math.max(80,rows.length*21+20);const g=c.getContext('2d',{willReadFrequently:true});g.fillStyle='#fff';g.fillRect(0,0,W,c.height);g.fillStyle='#000';g.textBaseline='top';let y=10;for(const r of rows){g.font=r.f;g.textAlign=r.cen?'center':'left';g.fillText(r.s,r.cen?W/2:10,y);y+=21}return c}
 function raster(c){const p=c.getContext('2d',{willReadFrequently:true}).getImageData(0,0,W,c.height).data,o=new Uint8Array(BPR*c.height);for(let y=0;y<c.height;y++)for(let xb=0;xb<BPR;xb++){let v=0;for(let bit=0;bit<8;bit++){const i=(y*W+xb*8+bit)*4,lum=.299*p[i]+.587*p[i+1]+.114*p[i+2];if(p[i+3]>40&&lum<128)v|=1<<bit}o[y*BPR+xb]=v}return o}
 async function printPatient(p){const d=raster(makeCanvas(p));lastNotify='';await write(state());await sleep(80);await write(quality());await sleep(60);await write(energy());await sleep(60);await write(apply());await sleep(60);await write(start());await sleep(60);for(let y=0;y<d.length;y+=BPR)await write(row(d.slice(y,y+BPR)));await write(feed(25));await sleep(100);await write(paper());await write(paper());await write(paper());await write(end());await sleep(1000);return /5178ae0101000000ff/i.test(lastNotify)}
 async function getPatient(token){const d=new Date(),date=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');const s=await firebase.firestore().collection('minorOT').doc(date).collection('patients').where('token','==',token).limit(1).get();if(s.empty)throw Error('Token '+token+' was not found in today\'s queue.');return{id:s.docs[0].id,...s.docs[0].data()}}
-async function doPrint(token){if(!token)token=prompt('Enter the token to print (e.g. OT-001):');if(!token)return;const p=await getPatient(String(token).trim());toast('Connecting to SEZNIK B21…',true);if(!tx){const d=await navigator.bluetooth.requestDevice({filters:[{services:[SERVICE]}],optionalServices:[SERVICE]});await connect(d)}toast('Sending OT ticket…',true);const ok=await printPatient(p);if(ok)toast('Printer confirmed OT- ticket completed.',true);else toast('Print data sent. No printer confirmation received.',false)}
+async function doPrint(token){
+  if(!token)token=prompt('Enter the token to print (e.g. OT-001):');
+  if(!token)return;
+  // IMPORTANT: requestDevice MUST happen before any await so Chrome sees the button tap as the user gesture.
+  if(!tx){
+    toast('Choose your SEZNIK B21…',true);
+    const d=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:[SERVICE]});
+    await connect(d);
+    toast('SEZNIK B21 connected.',true);
+  }
+  // Only after Bluetooth permission/selection is complete do we access Firestore.
+  const p=await getPatient(String(token).trim());
+  toast('Sending OT ticket…',true);
+  const ok=await printPatient(p);
+  if(ok)toast('Printer confirmed the print job.',true);
+  else toast('Data sent to B21. No confirmation received.',false);
+}
 function intercept(e){const t=e.target&&e.target.closest&&e.target.closest('.minor-ot-direct-print,#minor-ot-floating-print');if(!t)return;e.preventDefault();e.stopImmediatePropagation();const card=t.closest('.patient-card'),te=card&&card.querySelector('.token');const token=te?te.textContent.trim():null;if(connecting)return;connecting=true;doPrint(token).catch(err=>{console.error(err);toast('Print failed: '+err.message,false)}).finally(()=>connecting=false)}
 document.addEventListener('click',intercept,true);window.minorOTDirectPrint=doPrint;window.__minorOTB21Protocol='5178/AE30/AE01';
 })();
