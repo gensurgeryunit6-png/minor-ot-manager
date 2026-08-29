@@ -1,11 +1,7 @@
 // ============================================================
 // FIREBASE CONFIGURATION — Minor OT Manager
 // ============================================================
-// Replace the values below with the config from:
-// Firebase Console → Project Settings → General → Your apps → SDK setup and configuration
-//
-// This file is loaded as a plain <script> before the app, so it
-// only needs to define a single global: `firebaseConfig`.
+// This file is loaded as a plain <script> before the app.
 // ============================================================
 
 const firebaseConfig = {
@@ -90,6 +86,8 @@ const firebaseConfig = {
     return report;
   }
 
+  // IMPORTANT: requestDevice() is reached directly from the click handler.
+  // Do not perform a Firestore read before this function is called.
   async function connectPrinter(){
     if(!navigator.bluetooth) throw new Error('Web Bluetooth is unavailable. Open this site in Chrome on Android.');
     if(connectedDevice&&connectedDevice.gatt&&connectedDevice.gatt.connected&&writeCharacteristic) return connectedDevice;
@@ -141,7 +139,6 @@ const firebaseConfig = {
 
   async function printPatient(p){
     try{
-      toast('Connecting to Seznik B21…',true);
       await connectPrinter();
       toast('Printing '+p.token+'…',true);
       await writeBytes(escposText(p));
@@ -153,13 +150,26 @@ const firebaseConfig = {
     }
   }
 
+  // CRITICAL FIX: requestDevice() must happen before the asynchronous
+  // Firestore lookup. The previous version queried Firestore first, which
+  // caused Chrome to reject requestDevice() with the user-gesture error.
   async function printToken(token){
     try{
+      // This is intentionally the FIRST asynchronous operation after the tap.
+      await connectPrinter();
+
       if(!token) token=prompt('Enter the token to print (e.g. OT-001):');
       if(!token) return;
+
       const p=await getPatientByToken(String(token).trim());
-      await printPatient(p);
-    }catch(e){toast('Print error: '+e.message,false);}
+      toast('Printing '+p.token+'…',true);
+      await writeBytes(escposText(p));
+      toast('Printed '+p.token+' successfully.',true);
+    }catch(e){
+      console.error('Direct printer error',e,window.__minorOTPrinterDiagnostics||[]);
+      toast('Print error: '+e.message,false);
+      alert('Direct Bluetooth printing could not complete.\n\n'+e.message+'\n\nIf the B21 connects but does not print, the printer may use a proprietary iPrint protocol rather than ESC/POS.');
+    }
   }
 
   window.minorOTDirectPrint=printToken;
