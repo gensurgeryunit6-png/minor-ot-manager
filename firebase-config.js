@@ -12,9 +12,6 @@ const firebaseConfig = {
 
 // ============================================================
 // DIRECT BLUETOOTH PRINTER BRIDGE
-// The critical part is that requestDevice() is invoked literally
-// inside the user's pointerup/click handler, before any await,
-// Firestore lookup, toast, or other asynchronous operation.
 // ============================================================
 (function(){
   'use strict';
@@ -97,25 +94,14 @@ const firebaseConfig = {
     return device;
   }
 
-  // This function is only used when a device is already permitted.
-  async function connectPreviouslySelected(device){
-    if(device && device.gatt && device.gatt.connected && writeCharacteristic) return device;
-    writeCharacteristic=null;
-    return finishConnection(device);
-  }
-
   function requestPrinterFromGesture(){
     if(!navigator.bluetooth) return Promise.reject(new Error('Web Bluetooth is unavailable. Open this site in Chrome on Android.'));
     if(connecting) return Promise.reject(new Error('Bluetooth connection is already starting.'));
     connecting=true;
-
-    // DO NOT move this call below an await. This line executes directly
-    // during the pointerup/click user gesture.
-    const request = navigator.bluetooth.requestDevice({
+    const request=navigator.bluetooth.requestDevice({
       acceptAllDevices:true,
       optionalServices:SERVICE_UUIDS
     });
-
     return request.then(device=>finishConnection(device)).finally(()=>{connecting=false;});
   }
 
@@ -162,8 +148,15 @@ const firebaseConfig = {
     toast('Printed '+p.token+' successfully.',true);
   }
 
-  // Called ONLY from a real user pointer event. requestDevice is the first
-  // meaningful operation, so Chrome retains transient user activation.
+  function showPrintError(e){
+    console.error('Direct printer error',e,window.__minorOTPrinterDiagnostics||[]);
+    toast('Print error: '+e.message,false);
+    alert('Direct Bluetooth printing could not complete.\n\n'+e.message+'\n\nIf SEZNIK B21 connects but does not print, its firmware may use a proprietary iPrint protocol rather than ESC/POS.');
+  }
+
+  // IMPORTANT: this function is called directly by the button's CLICK handler.
+  // The requestDevice() call is made synchronously before any toast, await,
+  // Firestore read, or other asynchronous work.
   function handleDirectPrintGesture(token){
     if(!navigator.bluetooth){
       alert('Web Bluetooth is unavailable. Please use Chrome on Android.');
@@ -175,16 +168,26 @@ const firebaseConfig = {
       return;
     }
 
-    toast('Select SEZNIK B21 in the Bluetooth window…',true);
-    requestPrinterFromGesture()
-      .then(()=>printAfterConnection(token))
-      .catch(showPrintError);
-  }
+    if(connecting) return;
+    connecting=true;
 
-  function showPrintError(e){
-    console.error('Direct printer error',e,window.__minorOTPrinterDiagnostics||[]);
-    toast('Print error: '+e.message,false);
-    alert('Direct Bluetooth printing could not complete.\n\n'+e.message+'\n\nIf SEZNIK B21 connects but does not print, its firmware may use a proprietary iPrint protocol rather than ESC/POS.');
+    // CRITICAL: requestDevice is literally the first operation after the click.
+    const request=navigator.bluetooth.requestDevice({
+      acceptAllDevices:true,
+      optionalServices:SERVICE_UUIDS
+    });
+
+    request.then(device=>{
+      connectedDevice=device;
+      return device.gatt.connect().then(server=>findWritableCharacteristic(server)).then(report=>{
+        window.__minorOTPrinterDiagnostics=report;
+        device.addEventListener('gattserverdisconnected',()=>{
+          writeCharacteristic=null;
+          connectedDevice=null;
+        });
+        return printAfterConnection(token);
+      });
+    }).catch(showPrintError).finally(()=>{connecting=false;});
   }
 
   window.minorOTDirectPrint=handleDirectPrintGesture;
@@ -203,13 +206,11 @@ const firebaseConfig = {
       b.style.cssText='font-size:10px;padding:4px 8px';
       b.textContent='🖨️';
       b.title='Direct print to SEZNIK B21';
-      // pointerup is deliberately used: Chrome documents pointerup/click
-      // as valid user gestures for requestDevice().
-      b.addEventListener('pointerup',e=>{
-        if(e.button!==0) return;
+      // Use a normal CLICK handler. Do not use pointerup or an async wrapper.
+      b.onclick=function(e){
         e.preventDefault();
         handleDirectPrintGesture(token);
-      });
+      };
       box.insertBefore(b,box.children[1]||null);
     });
   }
@@ -222,11 +223,11 @@ const firebaseConfig = {
     b.textContent='🖨️ Print';
     b.title='Print a Minor OT token directly to the SEZNIK B21';
     b.style.cssText='position:fixed;right:14px;bottom:14px;z-index:9998;border:0;border-radius:999px;padding:12px 16px;background:#2563eb;color:#fff;font:700 13px system-ui;box-shadow:0 5px 18px rgba(0,0,0,.25)';
-    b.addEventListener('pointerup',e=>{
-      if(e.button!==0) return;
+    // Normal click is required so Chrome preserves transient user activation.
+    b.onclick=function(e){
       e.preventDefault();
       handleDirectPrintGesture();
-    });
+    };
     document.body.appendChild(b);
   }
 
