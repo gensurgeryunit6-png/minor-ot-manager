@@ -1,9 +1,6 @@
 // ============================================================
 // FIREBASE CONFIGURATION — Minor OT Manager
 // ============================================================
-// This file is loaded as a plain <script> before the app.
-// ============================================================
-
 const firebaseConfig = {
   apiKey: "AIzaSyBhLTBL9j5ynCqLE_-0Bkj-qVY3v3SEz0g",
   authDomain: "minor-ot-manager.firebaseapp.com",
@@ -15,6 +12,9 @@ const firebaseConfig = {
 
 // ============================================================
 // DIRECT BLUETOOTH PRINTER BRIDGE
+// The critical part is that requestDevice() is invoked literally
+// inside the user's pointerup/click handler, before any await,
+// Firestore lookup, toast, or other asynchronous operation.
 // ============================================================
 (function(){
   'use strict';
@@ -25,9 +25,7 @@ const firebaseConfig = {
     '0000ffe0-0000-1000-8000-00805f9b34fb',
     '000018f0-0000-1000-8000-00805f9b34fb',
     '6e400001-b5a3-f393-e0a9-e50e24dcca9e',
-    '49535343-fe7d-4ae5-8fa9-9fafd205e455',
-    '0000ff01-0000-1000-8000-00805f9b34fb',
-    '0000ff02-0000-1000-8000-00805f9b34fb'
+    '49535343-fe7d-4ae5-8fa9-9fafd205e455'
   ];
 
   const CHAR_UUIDS = [
@@ -41,10 +39,11 @@ const firebaseConfig = {
     '49535343-1e4d-4bd9-ba61-23c647249616'
   ];
 
-  let connectedDevice=null;
-  let writeCharacteristic=null;
+  let connectedDevice = null;
+  let writeCharacteristic = null;
+  let connecting = false;
 
-  function toast(message,ok){
+  function toast(message, ok){
     let el=document.getElementById('minor-ot-print-toast');
     if(!el){
       el=document.createElement('div');
@@ -78,7 +77,7 @@ const firebaseConfig = {
         const p=c.properties||{};
         report.push(service.uuid+' / '+c.uuid+' ['+Object.keys(p).filter(k=>p[k]).join(',')+']');
         if(p.writeWithoutResponse||p.write){
-          if(!writeCharacteristic||CHAR_UUIDS.includes(c.uuid.toLowerCase())) writeCharacteristic=c;
+          if(!writeCharacteristic || CHAR_UUIDS.includes(c.uuid.toLowerCase())) writeCharacteristic=c;
         }
       }
     }
@@ -86,19 +85,38 @@ const firebaseConfig = {
     return report;
   }
 
-  // IMPORTANT: requestDevice() is reached directly from the click handler.
-  // Do not perform a Firestore read before this function is called.
-  async function connectPrinter(){
-    if(!navigator.bluetooth) throw new Error('Web Bluetooth is unavailable. Open this site in Chrome on Android.');
-    if(connectedDevice&&connectedDevice.gatt&&connectedDevice.gatt.connected&&writeCharacteristic) return connectedDevice;
-    writeCharacteristic=null;
-    toast('Select your Seznik B21 in the Bluetooth window…',true);
-    connectedDevice=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:SERVICE_UUIDS});
-    const server=await connectedDevice.gatt.connect();
+  async function finishConnection(device){
+    connectedDevice=device;
+    const server=await device.gatt.connect();
     const report=await findWritableCharacteristic(server);
-    connectedDevice.addEventListener('gattserverdisconnected',()=>{writeCharacteristic=null;});
     window.__minorOTPrinterDiagnostics=report;
-    return connectedDevice;
+    device.addEventListener('gattserverdisconnected',()=>{
+      writeCharacteristic=null;
+      connectedDevice=null;
+    });
+    return device;
+  }
+
+  // This function is only used when a device is already permitted.
+  async function connectPreviouslySelected(device){
+    if(device && device.gatt && device.gatt.connected && writeCharacteristic) return device;
+    writeCharacteristic=null;
+    return finishConnection(device);
+  }
+
+  function requestPrinterFromGesture(){
+    if(!navigator.bluetooth) return Promise.reject(new Error('Web Bluetooth is unavailable. Open this site in Chrome on Android.'));
+    if(connecting) return Promise.reject(new Error('Bluetooth connection is already starting.'));
+    connecting=true;
+
+    // DO NOT move this call below an await. This line executes directly
+    // during the pointerup/click user gesture.
+    const request = navigator.bluetooth.requestDevice({
+      acceptAllDevices:true,
+      optionalServices:SERVICE_UUIDS
+    });
+
+    return request.then(device=>finishConnection(device)).finally(()=>{connecting=false;});
   }
 
   function escposText(p){
@@ -120,16 +138,14 @@ const firebaseConfig = {
     const max=180;
     for(let i=0;i<bytes.length;i+=max){
       const part=bytes.slice(i,i+max);
-      if(writeCharacteristic.properties.writeWithoutResponse&&writeCharacteristic.writeValueWithoutResponse) await writeCharacteristic.writeValueWithoutResponse(part);
+      if(writeCharacteristic.properties.writeWithoutResponse && writeCharacteristic.writeValueWithoutResponse) await writeCharacteristic.writeValueWithoutResponse(part);
       else await writeCharacteristic.writeValue(part);
       await new Promise(r=>setTimeout(r,25));
     }
   }
 
   async function getPatientByToken(token){
-    let app;
-    try{app=firebase.app('minorOTPrinter');}catch(e){app=firebase.initializeApp(firebaseConfig,'minorOTPrinter');}
-    const db=firebase.firestore(app);
+    const db=firebase.firestore();
     const d=new Date();
     const date=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
     const snap=await db.collection('minorOT').doc(date).collection('patients').where('token','==',token).limit(1).get();
@@ -137,43 +153,41 @@ const firebaseConfig = {
     return {id:snap.docs[0].id,...snap.docs[0].data()};
   }
 
-  async function printPatient(p){
-    try{
-      await connectPrinter();
-      toast('Printing '+p.token+'…',true);
-      await writeBytes(escposText(p));
-      toast('Printed '+p.token+' successfully.',true);
-    }catch(e){
-      console.error('Direct printer error',e,window.__minorOTPrinterDiagnostics||[]);
-      toast('Direct print failed: '+e.message,false);
-      alert('Direct Bluetooth printing could not complete.\n\n'+e.message+'\n\nIf the B21 connects but does not print, the printer may use a proprietary iPrint protocol rather than ESC/POS.');
-    }
+  async function printAfterConnection(token){
+    if(!token) token=prompt('Enter the token to print (e.g. OT-001):');
+    if(!token) return;
+    const p=await getPatientByToken(String(token).trim());
+    toast('Printing '+p.token+'…',true);
+    await writeBytes(escposText(p));
+    toast('Printed '+p.token+' successfully.',true);
   }
 
-  // CRITICAL FIX: requestDevice() must happen before the asynchronous
-  // Firestore lookup. The previous version queried Firestore first, which
-  // caused Chrome to reject requestDevice() with the user-gesture error.
-  async function printToken(token){
-    try{
-      // This is intentionally the FIRST asynchronous operation after the tap.
-      await connectPrinter();
-
-      if(!token) token=prompt('Enter the token to print (e.g. OT-001):');
-      if(!token) return;
-
-      const p=await getPatientByToken(String(token).trim());
-      toast('Printing '+p.token+'…',true);
-      await writeBytes(escposText(p));
-      toast('Printed '+p.token+' successfully.',true);
-    }catch(e){
-      console.error('Direct printer error',e,window.__minorOTPrinterDiagnostics||[]);
-      toast('Print error: '+e.message,false);
-      alert('Direct Bluetooth printing could not complete.\n\n'+e.message+'\n\nIf the B21 connects but does not print, the printer may use a proprietary iPrint protocol rather than ESC/POS.');
+  // Called ONLY from a real user pointer event. requestDevice is the first
+  // meaningful operation, so Chrome retains transient user activation.
+  function handleDirectPrintGesture(token){
+    if(!navigator.bluetooth){
+      alert('Web Bluetooth is unavailable. Please use Chrome on Android.');
+      return;
     }
+
+    if(connectedDevice && connectedDevice.gatt && connectedDevice.gatt.connected && writeCharacteristic){
+      printAfterConnection(token).catch(showPrintError);
+      return;
+    }
+
+    toast('Select SEZNIK B21 in the Bluetooth window…',true);
+    requestPrinterFromGesture()
+      .then(()=>printAfterConnection(token))
+      .catch(showPrintError);
   }
 
-  window.minorOTDirectPrint=printToken;
-  window.minorOTPrintPatient=printPatient;
+  function showPrintError(e){
+    console.error('Direct printer error',e,window.__minorOTPrinterDiagnostics||[]);
+    toast('Print error: '+e.message,false);
+    alert('Direct Bluetooth printing could not complete.\n\n'+e.message+'\n\nIf SEZNIK B21 connects but does not print, its firmware may use a proprietary iPrint protocol rather than ESC/POS.');
+  }
+
+  window.minorOTDirectPrint=handleDirectPrintGesture;
   window.minorOTPrinterDiagnostics=()=>window.__minorOTPrinterDiagnostics||[];
 
   function addPrintButtons(){
@@ -184,10 +198,18 @@ const firebaseConfig = {
       const token=tokenEl&&tokenEl.textContent.trim();
       if(!token) return;
       const b=document.createElement('button');
-      b.type='button'; b.className='btn btn-blue minor-ot-direct-print';
-      b.style.cssText='font-size:10px;padding:4px 8px'; b.textContent='🖨️';
-      b.title='Direct print to Seznik B21';
-      b.addEventListener('click',()=>printToken(token));
+      b.type='button';
+      b.className='btn btn-blue minor-ot-direct-print';
+      b.style.cssText='font-size:10px;padding:4px 8px';
+      b.textContent='🖨️';
+      b.title='Direct print to SEZNIK B21';
+      // pointerup is deliberately used: Chrome documents pointerup/click
+      // as valid user gestures for requestDevice().
+      b.addEventListener('pointerup',e=>{
+        if(e.button!==0) return;
+        e.preventDefault();
+        handleDirectPrintGesture(token);
+      });
       box.insertBefore(b,box.children[1]||null);
     });
   }
@@ -195,15 +217,22 @@ const firebaseConfig = {
   function addFloatingPrinter(){
     if(document.getElementById('minor-ot-floating-print')) return;
     const b=document.createElement('button');
-    b.id='minor-ot-floating-print'; b.type='button'; b.textContent='🖨️ Print';
-    b.title='Print a Minor OT token directly to the Seznik B21';
+    b.id='minor-ot-floating-print';
+    b.type='button';
+    b.textContent='🖨️ Print';
+    b.title='Print a Minor OT token directly to the SEZNIK B21';
     b.style.cssText='position:fixed;right:14px;bottom:14px;z-index:9998;border:0;border-radius:999px;padding:12px 16px;background:#2563eb;color:#fff;font:700 13px system-ui;box-shadow:0 5px 18px rgba(0,0,0,.25)';
-    b.addEventListener('click',()=>printToken());
+    b.addEventListener('pointerup',e=>{
+      if(e.button!==0) return;
+      e.preventDefault();
+      handleDirectPrintGesture();
+    });
     document.body.appendChild(b);
   }
 
   function boot(){
-    addFloatingPrinter(); addPrintButtons();
+    addFloatingPrinter();
+    addPrintButtons();
     const observer=new MutationObserver(()=>addPrintButtons());
     observer.observe(document.body,{childList:true,subtree:true});
   }
