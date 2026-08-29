@@ -1,6 +1,4 @@
-// ============================================================
-// FIREBASE CONFIGURATION — Minor OT Manager
-// ============================================================
+// Firebase configuration
 const firebaseConfig = {
   apiKey: "AIzaSyBhLTBL9j5ynCqLE_-0Bkj-qVY3v3SEz0g",
   authDomain: "minor-ot-manager.firebaseapp.com",
@@ -11,425 +9,186 @@ const firebaseConfig = {
 };
 
 // ============================================================
-// DIRECT BLUETOOTH PRINTER BRIDGE — SEZNIK / LUCKJINGLE D1
+// SEZNIK B21 / iPrint-compatible BLE bridge
 // ============================================================
 (function(){
   'use strict';
 
-  // D1 printers are commonly exposed as either AE30/AE01 or FF00/FF02.
-  // The Seznik D1 protocol uses a 384-dot (58 mm) raster image, not plain
-  // ESC/POS text. Text is therefore rendered to a bitmap in the browser.
-  const SERVICE_UUIDS = [
-    '0000ae30-0000-1000-8000-00805f9b34fb',
-    '0000ff00-0000-1000-8000-00805f9b34fb',
-    '0000ffe0-0000-1000-8000-00805f9b34fb',
-    '000018f0-0000-1000-8000-00805f9b34fb',
-    '6e400001-b5a3-f393-e0a9-e50e24dcca9e',
-    '49535343-fe7d-4ae5-8fa9-9fafd205e455'
-  ];
+  const SERVICE='0000ae30-0000-1000-8000-00805f9b34fb';
+  const WRITE='0000ae01-0000-1000-8000-00805f9b34fb';
+  const NOTIFY='0000ae02-0000-1000-8000-00805f9b34fb';
+  const WIDTH=384;
+  const BYTES_PER_ROW=48;
+  let device=null, server=null, tx=null, rx=null, connecting=false;
+  let lastNotify='';
 
-  const PREFERRED_CHAR_UUIDS = [
-    '0000ae01-0000-1000-8000-00805f9b34fb',
-    '0000ff02-0000-1000-8000-00805f9b34fb',
-    '0000ffe1-0000-1000-8000-00805f9b34fb',
-    '00002af1-0000-1000-8000-00805f9b34fb',
-    '6e400002-b5a3-f393-e0a9-e50e24dcca9e',
-    '49535343-8841-43f4-a8d4-ecbe34729bb3',
-    '49535343-1e4d-4bd9-ba61-23c647249616',
-    '0000ff03-0000-1000-8000-00805f9b34fb'
-  ];
+  function toast(msg,ok){
+    let e=document.getElementById('minor-ot-print-toast');
+    if(!e){e=document.createElement('div');e.id='minor-ot-print-toast';e.style.cssText='position:fixed;left:12px;right:12px;bottom:18px;z-index:99999;padding:13px 15px;border-radius:14px;color:#fff;font:700 14px system-ui;text-align:center;box-shadow:0 8px 30px rgba(0,0,0,.25)';document.body.appendChild(e)}
+    e.style.background=ok?'#166534':'#991b1b';e.textContent=msg;clearTimeout(e._t);e._t=setTimeout(()=>e.remove(),5000);
+  }
+  const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+  const hex=a=>Array.from(a).map(x=>x.toString(16).padStart(2,'0')).join('');
 
-  const PRINT_WIDTH = 384;
-  const BYTES_PER_ROW = PRINT_WIDTH / 8;
-  const WRITE_CHUNK = 180;
-
-  let connectedDevice = null;
-  let writeCharacteristic = null;
-  let connecting = false;
-  let currentPrinterReport = [];
-
-  function toast(message, ok){
-    let el=document.getElementById('minor-ot-print-toast');
-    if(!el){
-      el=document.createElement('div');
-      el.id='minor-ot-print-toast';
-      el.style.cssText='position:fixed;left:12px;right:12px;bottom:18px;z-index:99999;padding:12px 14px;border-radius:12px;background:#111827;color:#fff;font:600 13px system-ui;box-shadow:0 8px 30px rgba(0,0,0,.25);text-align:center';
-      document.body.appendChild(el);
+  // CRC-8 table used by the 0x5178 protocol (polynomial 0x07).
+  function crc8(data){
+    let c=0;
+    for(const b of data){
+      c^=b;
+      for(let i=0;i<8;i++) c=(c&0x80)?((c<<1)^0x07)&255:(c<<1)&255;
     }
-    el.style.background=ok?'#166534':'#991b1b';
-    el.textContent=message;
-    clearTimeout(el._timer);
-    el._timer=setTimeout(()=>el.remove(),4500);
+    return c;
   }
 
-  function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+  function packet(cmd,payload){
+    const n=payload.length;
+    const out=new Uint8Array(7+n);
+    out[0]=0x51;out[1]=0x78;out[2]=cmd;out[3]=0;
+    out[4]=n&255;out[5]=(n>>8)&255;
+    out.set(payload,6);
+    out[6+n]=crc8(payload);
+    out[7+n-1+1]=0xff;
+    return out;
+  }
 
-  async function findWritableCharacteristic(server){
-    const services=[];
-    const seen=new Set();
+  // Explicit builder avoids ambiguity around packet length.
+  function pkt(cmd,payload){
+    const p=Uint8Array.from(payload), out=new Uint8Array(8+p.length-1);
+    out[0]=0x51;out[1]=0x78;out[2]=cmd;out[3]=0;
+    out[4]=p.length&255;out[5]=(p.length>>8)&255;
+    out.set(p,6);out[6+p.length]=crc8(p);out[7+p.length]=0xff;
+    return out;
+  }
 
-    for(const uuid of SERVICE_UUIDS){
-      try{
-        const s=await server.getPrimaryService(uuid);
-        if(!seen.has(s.uuid.toLowerCase())){
-          services.push(s);
-          seen.add(s.uuid.toLowerCase());
-        }
-      }catch(e){}
-    }
+  const state=()=>pkt(0xA3,[0]);
+  const info=()=>pkt(0xA8,[0]);
+  const quality=()=>pkt(0xA4,[0x32]);
+  const energy=()=>pkt(0xAF,[0xFF,0xFF]);
+  const applyEnergy=()=>pkt(0xBE,[1]);
+  const latticeStart=()=>pkt(0xA6,[0xAA,0x55,0x17,0x38,0x44,0x5F,0x5F,0x5F,0x44,0x38,0x2C]);
+  const latticeEnd=()=>pkt(0xA6,[0xAA,0x55,0x17,0,0,0,0,0,0,0,0x17]);
+  const feed=n=>pkt(0xBD,[Math.max(0,Math.min(255,n))]);
+  const setPaper=()=>pkt(0xA1,[0x30,0]);
 
+  function rowPacket(row){ return pkt(0xA2,row); }
+
+  async function write(data){
+    if(!tx) throw new Error('SEZNIK write characteristic is not connected.');
+    // D1/iPrint-compatible printers accept packets up to the negotiated MTU.
+    // A raster row packet is 56 bytes. Try it as one BLE write first.
     try{
-      const all=await server.getPrimaryServices();
-      for(const s of all){
-        if(!seen.has(s.uuid.toLowerCase())){
-          services.push(s);
-          seen.add(s.uuid.toLowerCase());
-        }
-      }
+      await tx.writeValueWithoutResponse(data);
+    }catch(e){
+      if(tx.writeValue) await tx.writeValue(data); else throw e;
+    }
+    await sleep(22);
+  }
+
+  function attachNotify(){
+    if(!rx) return;
+    try{
+      rx.addEventListener('characteristicvaluechanged',e=>{
+        lastNotify=hex(new Uint8Array(e.target.value.buffer));
+        window.__minorOTPrinterLastNotify=lastNotify;
+      });
+      rx.startNotifications().catch(()=>{});
     }catch(e){}
-
-    const report=[];
-    const writable=[];
-
-    for(const service of services){
-      let chars=[];
-      try{ chars=await service.getCharacteristics(); }catch(e){ continue; }
-      for(const c of chars){
-        const p=c.properties||{};
-        const props=Object.keys(p).filter(k=>p[k]);
-        report.push(service.uuid+' / '+c.uuid+' ['+props.join(',')+']');
-        if(p.writeWithoutResponse || p.write) writable.push(c);
-      }
-    }
-
-    currentPrinterReport=report;
-    window.__minorOTPrinterDiagnostics=report;
-
-    if(!writable.length){
-      throw new Error('No writable Bluetooth characteristic found. Accessible services: '+(report.join(' | ')||'none'));
-    }
-
-    // Prefer the known D1 write characteristic. Otherwise use the first
-    // writable characteristic exposed by the printer.
-    writeCharacteristic = writable.find(c=>PREFERRED_CHAR_UUIDS.includes(c.uuid.toLowerCase())) || writable[0];
-    return report;
   }
 
-  function attachDisconnectHandler(device){
-    device.addEventListener('gattserverdisconnected',()=>{
-      writeCharacteristic=null;
-      connectedDevice=null;
-    });
+  async function connectSelected(d){
+    device=d;server=await d.gatt.connect();
+    const svc=await server.getPrimaryService(SERVICE);
+    tx=await svc.getCharacteristic(WRITE);
+    try{rx=await svc.getCharacteristic(NOTIFY);attachNotify()}catch(e){rx=null}
+    d.addEventListener('gattserverdisconnected',()=>{tx=null;rx=null;server=null;device=null});
   }
 
-  async function connectDevice(device){
-    if(!device || !device.gatt) throw new Error('Selected device does not expose GATT Bluetooth.');
-    connectedDevice=device;
-    attachDisconnectHandler(device);
-    const server=await device.gatt.connect();
-    await findWritableCharacteristic(server);
-    return device;
-  }
-
-  // ============================================================
-  // D1 PROTOCOL
-  // ============================================================
-  // Reverse-engineered Seznik MiniX / LuckJingle D1 protocol:
-  //   wake       10 FF 40
-  //   initialize 10 FF F1 03
-  //   density    10 FF 10 00 <0..7> 00
-  //   image      GS v 0 00 30 00 <widthBytes> <height>
-  //   end        10 FF F1 45
-  // The printer expects a 384-pixel-wide 1-bit raster. A black pixel is
-  // encoded as a 1 bit, MSB first.
-
-  function d1EnableCommands(){
-    return [
-      new Uint8Array([0x10,0xFF,0x40]),
-      new Uint8Array([0x10,0xFF,0xF1,0x03])
-    ];
-  }
-
-  function d1DensityCommand(density){
-    return new Uint8Array([0x10,0xFF,0x10,0x00,density & 0x07,0x00]);
-  }
-
-  function d1EndCommand(){
-    return new Uint8Array([0x10,0xFF,0xF1,0x45]);
-  }
-
-  function d1ImageHeader(height){
-    return new Uint8Array([
-      0x1D,0x76,0x30,0x00,
-      BYTES_PER_ROW & 0xFF,
-      (BYTES_PER_ROW >> 8) & 0xFF,
-      height & 0xFF,
-      (height >> 8) & 0xFF
-    ]);
-  }
-
-  async function writeBytes(bytes){
-    if(!writeCharacteristic) throw new Error('Printer is not connected.');
-    for(let i=0;i<bytes.length;i+=WRITE_CHUNK){
-      const part=bytes.slice(i,i+WRITE_CHUNK);
-      if(writeCharacteristic.properties.writeWithoutResponse && writeCharacteristic.writeValueWithoutResponse){
-        await writeCharacteristic.writeValueWithoutResponse(part);
-      }else if(writeCharacteristic.writeValue){
-        await writeCharacteristic.writeValue(part);
-      }else{
-        throw new Error('Selected Bluetooth characteristic cannot write data.');
-      }
-      // Small pacing delay prevents many Android BLE stacks from overrunning
-      // the printer's receive buffer.
-      await sleep(35);
-    }
-  }
-
-  // ============================================================
-  // BROWSER TEXT -> 384px 1-BIT RASTER
-  // ============================================================
-  function clean(v){
-    return String(v ?? '').replace(/[\\u0000-\\u001f]/g,' ').trim();
-  }
-
-  function getRedFlags(p){
-    return [
-      p.fever&&'Fever',
-      p.bleeding&&'Bleeding',
-      p.pain&&'Severe Pain',
-      p.shock&&'Shock'
-    ].filter(Boolean).join(', ') || 'None';
-  }
-
-  function wrapText(ctx,text,maxWidth){
-    const words=String(text||'').split(/\\s+/);
-    const lines=[];
-    let line='';
-    for(const word of words){
-      if(!line){
-        line=word;
-        continue;
-      }
-      const candidate=line+' '+word;
-      if(ctx.measureText(candidate).width<=maxWidth){
-        line=candidate;
-      }else{
-        lines.push(line);
-        line=word;
-      }
-    }
-    if(line) lines.push(line);
-    return lines.length?lines:[''];
-  }
-
-  function drawReceiptCanvas(p){
-    const scale=1;
-    const canvas=document.createElement('canvas');
-    canvas.width=PRINT_WIDTH;
-
-    // First pass estimates height. The second pass uses the exact height.
-    const fontNormal='16px Arial, sans-serif';
-    const fontBold='bold 18px Arial, sans-serif';
-    const smallFont='14px Arial, sans-serif';
-    const lineHeight=20;
-    const margin=10;
-    const maxWidth=PRINT_WIDTH-margin*2;
-
-    canvas.height=800;
-    let ctx=canvas.getContext('2d',{willReadFrequently:true});
-    ctx.font=fontNormal;
-
+  // Browser canvas -> 384-dot bitmap. Protocol is LSB-first.
+  function canvas(p){
+    const c=document.createElement('canvas');c.width=WIDTH;
+    const ctx0=c.getContext('2d');
     const rows=[];
-    const add= (text, opts={}) => rows.push({text:String(text??''), ...opts});
-    const addWrapped=(label,value,opts={})=>{
-      const prefix=label ? label+' : ' : '';
-      ctx.font=opts.font||fontNormal;
-      const first=prefix+String(value??'');
-      const wrapped=wrapText(ctx,first,maxWidth);
-      wrapped.forEach((line,i)=>add(line,{font:opts.font||fontNormal,center:!!opts.center,spacing:opts.spacing||0}));
-    };
-
-    add('MINOR OT',{font:fontBold,center:true,spacing:4});
-    add('--------------------------------',{font:smallFont,center:true});
-    add('TOKEN: '+clean(p.token),{font:fontBold,center:true,spacing:5});
-    addWrapped('Name',clean(p.name));
-    addWrapped('Age/Sex',clean(p.age)+' / '+clean(p.sex));
-    addWrapped('OPD',clean(p.opd));
-    addWrapped('Diagnosis',clean(p.diagnosis));
-    addWrapped('Procedure',clean(p.procedure));
-    addWrapped('Type',p.isSeptic?'SEPTIC':'NON-SEPTIC');
-    addWrapped('Room',clean(p.room));
-    addWrapped('Priority',clean(p.priority).toUpperCase());
-    addWrapped('Red flags',getRedFlags(p));
-    add('--------------------------------',{font:smallFont,center:true,spacing:4});
-    add('Please retain this token.',{font:smallFont,center:true});
-
-    let height=margin;
-    for(const row of rows) height+=lineHeight+(row.spacing||0);
-    height+=margin+30;
-
-    canvas.height=Math.max(64,height);
-    ctx=canvas.getContext('2d',{willReadFrequently:true});
-    ctx.fillStyle='#ffffff';
-    ctx.fillRect(0,0,canvas.width,canvas.height);
-    ctx.fillStyle='#000000';
-    ctx.textBaseline='top';
-
-    let y=margin;
-    for(const row of rows){
-      ctx.font=row.font||fontNormal;
-      ctx.textAlign=row.center?'center':'left';
-      ctx.fillText(row.text,row.center?PRINT_WIDTH/2:margin,y);
-      y+=lineHeight+(row.spacing||0);
-    }
-    return canvas;
+    const normal='16px Arial,sans-serif', bold='bold 18px Arial,sans-serif';
+    const wrap=(s,font)=>{ctx0.font=font;const words=String(s??'').split(/\\s+/);let a=[],line='';for(const w of words){const t=line?line+' '+w:w;if(!line||ctx0.measureText(t).width<=364)line=t;else{a.push(line);line=w}}if(line)a.push(line);return a};
+    const add=(s,font=normal,center=false)=>rows.push({s:String(s??''),font,center});
+    const flags=[p.fever&&'Fever',p.bleeding&&'Bleeding',p.pain&&'Severe Pain',p.shock&&'Shock'].filter(Boolean).join(', ')||'None';
+    add('MINOR OT',bold,true);add('--------------------------------',normal,true);add('TOKEN: '+(p.token||''),bold,true);
+    [['Name',p.name],['Age/Sex',(p.age||'')+' / '+(p.sex||'')],['OPD',p.opd],['Diagnosis',p.diagnosis],['Procedure',p.procedure],['Type',p.isSeptic?'SEPTIC':'NON-SEPTIC'],['Room',p.room],['Priority',String(p.priority||'').toUpperCase()],['Red flags',flags]].forEach(([k,v])=>wrap(k+' : '+(v??''),normal).forEach(x=>add(x)));
+    add('--------------------------------',normal,true);add('Please retain this token.',normal,true);
+    const h=Math.max(80,rows.length*21+20);c.height=h;
+    const ctx=c.getContext('2d',{willReadFrequently:true});ctx.fillStyle='#fff';ctx.fillRect(0,0,WIDTH,h);ctx.fillStyle='#000';ctx.textBaseline='top';let y=10;
+    for(const r of rows){ctx.font=r.font;ctx.textAlign=r.center?'center':'left';ctx.fillText(r.s,r.center?WIDTH/2:10,y);y+=21}return c;
   }
 
-  function canvasToD1Raster(canvas){
-    const ctx=canvas.getContext('2d',{willReadFrequently:true});
-    const image=ctx.getImageData(0,0,PRINT_WIDTH,canvas.height).data;
-    const height=canvas.height;
-    const data=new Uint8Array(BYTES_PER_ROW*height);
-
-    for(let y=0;y<height;y++){
-      for(let xByte=0;xByte<BYTES_PER_ROW;xByte++){
-        let value=0;
-        for(let bit=0;bit<8;bit++){
-          const x=xByte*8+bit;
-          const i=(y*PRINT_WIDTH+x)*4;
-          const r=image[i], g=image[i+1], b=image[i+2], a=image[i+3];
-          const luminance=(0.299*r)+(0.587*g)+(0.114*b);
-          // Black pixels become 1 bits, MSB first.
-          if(a>40 && luminance<128) value|=(1<<(7-bit));
-        }
-        data[y*BYTES_PER_ROW+xByte]=value;
+  function raster(c){
+    const px=c.getContext('2d',{willReadFrequently:true}).getImageData(0,0,WIDTH,c.height).data;
+    const out=new Uint8Array(BYTES_PER_ROW*c.height);
+    for(let y=0;y<c.height;y++)for(let xb=0;xb<BYTES_PER_ROW;xb++){
+      let v=0;
+      for(let bit=0;bit<8;bit++){
+        const x=xb*8+bit,i=(y*WIDTH+x)*4,lum=.299*px[i]+.587*px[i+1]+.114*px[i+2];
+        if(px[i+3]>40&&lum<128)v|=(1<<bit); // LSB first
       }
+      out[y*BYTES_PER_ROW+xb]=v;
     }
-    return data;
+    return out;
   }
 
   async function printPatient(p){
-    const canvas=drawReceiptCanvas(p);
-    const raster=canvasToD1Raster(canvas);
-    const header=d1ImageHeader(canvas.height);
-
-    // Wake and initialize exactly as the D1 protocol expects.
-    for(const cmd of d1EnableCommands()){
-      await writeBytes(cmd);
-      await sleep(100);
-    }
-
-    // Density 3 gives a useful default darkness on thermal paper.
-    await writeBytes(d1DensityCommand(3));
+    const data=raster(canvas(p));
+    lastNotify='';
+    // Same command order used by the iPrint-compatible 0x5178 family.
+    await write(state());await sleep(80);
+    await write(quality());await sleep(60);
+    await write(energy());await sleep(60);
+    await write(applyEnergy());await sleep(60);
+    await write(latticeStart());await sleep(60);
+    for(let y=0;y<data.length;y+=BYTES_PER_ROW){await write(rowPacket(data.slice(y,y+BYTES_PER_ROW)))}
+    await write(feed(25));
     await sleep(100);
-
-    // Send header followed by the bitmap data. The BLE write function handles
-    // safe transport chunking; the printer reconstructs the stream.
-    await writeBytes(header);
-    await writeBytes(raster);
-
-    // Allow the print buffer to finish before the end-of-job signal.
-    await sleep(300);
-    await writeBytes(d1EndCommand());
-    await sleep(300);
+    await write(setPaper());await write(setPaper());await write(setPaper());
+    await write(latticeEnd());
+    await sleep(700);
+    // The printer may send a completion notification. Do not claim success
+    // merely because BLE writes succeeded.
+    const completed=/5178ae0101000000ff/i.test(lastNotify);
+    if(completed)return true;
+    return false;
   }
 
-  async function getPatientByToken(token){
-    const db=firebase.firestore();
-    const d=new Date();
-    const date=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
-    const snap=await db.collection('minorOT').doc(date).collection('patients').where('token','==',token).limit(1).get();
-    if(snap.empty) throw new Error('Token '+token+' was not found in today\'s queue.');
-    return {id:snap.docs[0].id,...snap.docs[0].data()};
+  async function getPatient(token){
+    const d=new Date(),date=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+    const snap=firebase.firestore().collection('minorOT').doc(date).collection('patients').where('token','==',token).limit(1).get();
+    const s=await snap;if(s.empty)throw new Error('Token '+token+' was not found in today\'s queue.');
+    return {id:s.docs[0].id,...s.docs[0].data()};
   }
 
-  async function printAfterConnection(token){
-    if(!token) token=prompt('Enter the token to print (e.g. OT-001):');
-    if(!token) return;
-    const p=await getPatientByToken(String(token).trim());
-    toast('Printing '+p.token+'…',true);
-    await printPatient(p);
-    toast('Printed '+p.token+' successfully.',true);
-  }
-
-  function showPrintError(e){
-    console.error('Direct printer error',e,currentPrinterReport);
-    toast('Print error: '+(e&&e.message?e.message:e),false);
-    alert('Direct Bluetooth printing could not complete.\n\n'+(e&&e.message?e.message:e)+'\n\nPrinter diagnostics:\n'+(currentPrinterReport.join('\n')||'none')+'\n\nIf the printer connects but still does not print, send me this diagnostic list.');
-  }
-
-  // IMPORTANT: requestDevice() must be called directly from the button click
-  // so Chrome retains the transient user activation required for Web Bluetooth.
-  function handleDirectPrintGesture(token){
-    if(!navigator.bluetooth){
-      alert('Web Bluetooth is unavailable. Please use Chrome on Android.');
-      return;
+  async function doPrint(token){
+    if(!token)token=prompt('Enter the token to print (e.g. OT-001):');if(!token)return;
+    const p=await getPatient(String(token).trim());
+    toast('Connecting to SEZNIK B21…',true);
+    if(!tx){
+      const d=await navigator.bluetooth.requestDevice({filters:[{services:[SERVICE]}],optionalServices:[SERVICE]});
+      await connectSelected(d);
     }
-
-    if(connectedDevice && connectedDevice.gatt && connectedDevice.gatt.connected && writeCharacteristic){
-      printAfterConnection(token).catch(showPrintError);
-      return;
-    }
-
-    if(connecting) return;
-    connecting=true;
-
-    const request=navigator.bluetooth.requestDevice({
-      acceptAllDevices:true,
-      optionalServices:SERVICE_UUIDS
-    });
-
-    request.then(device=>connectDevice(device))
-      .then(()=>printAfterConnection(token))
-      .catch(showPrintError)
-      .finally(()=>{connecting=false;});
+    toast('Sending OT ticket to printer…',true);
+    const complete=await printPatient(p);
+    if(complete) toast('Printer confirmed OT ticket completed.',true);
+    else toast('Data sent, but printer gave no completion response. Check the paper.',false);
   }
 
-  window.minorOTDirectPrint=handleDirectPrintGesture;
-  window.minorOTPrinterDiagnostics=()=>currentPrinterReport.slice();
-
-  function addPrintButtons(){
-    document.querySelectorAll('.patient-card .action-buttons').forEach(box=>{
-      if(box.querySelector('.minor-ot-direct-print')) return;
-      const card=box.closest('.patient-card');
-      const tokenEl=card&&card.querySelector('.token');
-      const token=tokenEl&&tokenEl.textContent.trim();
-      if(!token) return;
-      const b=document.createElement('button');
-      b.type='button';
-      b.className='btn btn-blue minor-ot-direct-print';
-      b.style.cssText='font-size:10px;padding:4px 8px';
-      b.textContent='🖨️';
-      b.title='Direct print to SEZNIK';
-      b.onclick=function(e){
-        e.preventDefault();
-        handleDirectPrintGesture(token);
-      };
-      box.insertBefore(b,box.children[1]||null);
-    });
+  function intercept(e){
+    const t=e.target&&e.target.closest&&e.target.closest('.minor-ot-direct-print,#minor-ot-floating-print');
+    if(!t)return;
+    e.preventDefault();e.stopImmediatePropagation();
+    const card=t.closest('.patient-card');
+    const tok=card&&card.querySelector('.token');
+    const token=tok?tok.textContent.trim():null;
+    if(connecting)return;connecting=true;
+    doPrint(token).catch(err=>{console.error(err);toast('Print failed: '+err.message,false)}).finally(()=>connecting=false);
   }
 
-  function addFloatingPrinter(){
-    if(document.getElementById('minor-ot-floating-print')) return;
-    const b=document.createElement('button');
-    b.id='minor-ot-floating-print';
-    b.type='button';
-    b.textContent='🖨️ Print';
-    b.title='Print a Minor OT token directly to the SEZNIK';
-    b.style.cssText='position:fixed;right:14px;bottom:14px;z-index:9998;border:0;border-radius:999px;padding:12px 16px;background:#2563eb;color:#fff;font:700 13px system-ui;box-shadow:0 5px 18px rgba(0,0,0,.25)';
-    b.onclick=function(e){
-      e.preventDefault();
-      handleDirectPrintGesture();
-    };
-    document.body.appendChild(b);
-  }
-
-  function boot(){
-    addFloatingPrinter();
-    addPrintButtons();
-    const observer=new MutationObserver(()=>addPrintButtons());
-    observer.observe(document.body,{childList:true,subtree:true});
-  }
-
-  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',boot); else boot();
+  document.addEventListener('click',intercept,true);
+  window.minorOTDirectPrint=doPrint;
+  window.__minorOTB21Protocol='5178/AE30/AE01';
 })();
