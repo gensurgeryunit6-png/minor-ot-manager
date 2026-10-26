@@ -162,7 +162,7 @@ function cloudLoadDate(){
         const parentSnap=await parentRef.get();const meta=parentSnap.exists?parentSnap.data():{};
         if(requestedDate!==date)return;
         if(!meta.clearedAt){setCloudStatus('Syncing…');for(const p of localForDate)await cloudSavePatient(p);return}
-      }catch(e){console.error('Cloud migration check failed:',e);setCloudStatus('Offline')}
+      }catch(e){console.error('Cloud migration check failed:',e);setCloudStatus('Offline');return}
       patients=[...otherDates];saveLocal();setCloudStatus('Synced');
     }else{
       patients=[...otherDates,...cloud];
