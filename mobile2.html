@@ -215,7 +215,9 @@ async function cloudLoadDate(){
   console.warn('Supabase unavailable; falling back to Firebase sync.');
  }
  if(!db){setCloudStatus('Local only');return}
- const requestedDate=date;setCloudStatus('Connecting…');
+ const requestedDate=date;
+ if(sb){setCloudStatus('Offline');return}
+ setCloudStatus('Connecting…');
  const parentRef=db.collection(CLOUD_ROOT).doc(requestedDate);
  const patientsRef=parentRef.collection('patients');
  cloudUnsubscribe=patientsRef.onSnapshot({includeMetadataChanges:true},async snap=>{
