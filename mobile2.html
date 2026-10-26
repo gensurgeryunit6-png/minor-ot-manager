@@ -199,7 +199,10 @@ async function sbClearDate(targetDate){
 }
 
 function cloudSavePatient(p){
- if(sb)return sbSavePatient(p);
+ if(sb){
+  syncWriteQueue=syncWriteQueue.then(()=>sbSavePatient(p)).catch(e=>{console.error('Queued Supabase write failed:',e);setCloudStatus('Offline');return false});
+  return syncWriteQueue;
+ }
  if(!db||!p||!p.token)return Promise.resolve(false);
  return db.collection(CLOUD_ROOT).doc(p.date||date).collection('patients').doc(p.token).set(p,{merge:true})
   .then(()=>{setCloudStatus('Synced');return true}).catch(e=>{console.error('Firebase save failed:',e);setCloudStatus('Offline');return false});
