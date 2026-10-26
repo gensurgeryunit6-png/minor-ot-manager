@@ -149,7 +149,7 @@ const SUPABASE_PUBLISHABLE_KEY='sb_publishable_cga5rEYY_gFG3KZ2Kpvb9g_ZoHKiYJd';
 const sb=(window.supabase&&window.supabase.createClient)
  ? window.supabase.createClient(SUPABASE_URL,SUPABASE_PUBLISHABLE_KEY,{auth:{persistSession:false,autoRefreshToken:false}})
  : null;
-let sbChannel=null;
+let sbChannel=null;let sbReady=false;
 const DEVICE_KEY='minor_ot_device_id_v1';
 let deviceId=localStorage.getItem(DEVICE_KEY);
 if(!deviceId){deviceId=(crypto.randomUUID?crypto.randomUUID():('dev-'+Date.now()+'-'+Math.random().toString(36).slice(2)));localStorage.setItem(DEVICE_KEY,deviceId);}
@@ -200,7 +200,7 @@ async function sbClearDate(targetDate){
  catch(e){console.error('Supabase clear failed:',e);setCloudStatus('Offline');return false}
 }
 function cloudSavePatient(p){
- if(sb){
+ if(sbReady){
   syncWriteQueue=syncWriteQueue.then(()=>sbSavePatient(p)).catch(e=>{console.error('Queued Supabase write failed:',e);setCloudStatus('Offline');return false});
   return syncWriteQueue;
  }
@@ -212,8 +212,9 @@ async function cloudLoadDate(){
  if(cloudUnsubscribe){cloudUnsubscribe();cloudUnsubscribe=null}
  if(sb){
   setCloudStatus('Connecting…');
-  if(await sbLoadDate(date)){await sbStartRealtime();return;}
-  console.warn('Supabase unavailable; falling back to Firebase sync.');
+  if(await sbLoadDate(date)){sbReady=true;await sbStartRealtime();return;}
+  if(sbReady){setCloudStatus('Offline');return;}
+  console.warn('Supabase is not configured yet; keeping the existing Firebase sync active.');
  }
  if(!db){setCloudStatus('Local only');return}
  const requestedDate=date;
@@ -238,7 +239,7 @@ async function cloudLoadDate(){
  },err=>{console.error('Firebase live sync failed:',err);setCloudStatus('Offline')});
 }
 async function cloudClearDate(targetDate){
- if(sb&&await sbClearDate(targetDate))return;
+ if(sbReady){await sbClearDate(targetDate);return;}
  if(!db)return;
  try{const parentRef=db.collection(CLOUD_ROOT).doc(targetDate);await parentRef.set({clearedAt:new Date().toISOString()},{merge:true});const ref=parentRef.collection('patients');const snap=await ref.get();for(let i=0;i<snap.docs.length;i+=450){const batch=db.batch();snap.docs.slice(i,i+450).forEach(doc=>batch.delete(doc.ref));await batch.commit()}}
  catch(e){console.error('Firebase clear failed:',e);setCloudStatus('Offline')}
@@ -254,7 +255,7 @@ function readForm(){form.name=$('#name').value.trim();form.age=$('#age').value;f
 function safetyPage(){return `${header()}<section class="card"><h2 class="title">Safety Checklist</h2><div class="hint">Choose Done or N/A. They are mutually exclusive.</div><div class="checklist">${checklist.map((x,i)=>`<div class="checkrow" id="checkrow${i}"><label class="checkmain"><input class="donebox" id="done${i}" type="checkbox">${x.name}</label>${x.na?`<label class="na"><input class="nabox" id="na${i}" type="checkbox">Not applicable (N/A)</label>`:''}</div>`).join('')}</div><div style="display:flex;gap:9px;margin-top:15px"><button class="btn soft" id="backReg">Back</button><button class="btn yellow" id="generateToken" style="margin-left:auto">Generate Token</button></div></section>`}
 function bindSafety(){$$('.nabox').forEach(n=>{n.onchange=()=>{const i=n.id.replace('na','');const d=$('#done'+i),row=$('#checkrow'+i);if(n.checked){d.checked=false;d.disabled=true;row.classList.add('na');row.classList.remove('done')}else{d.disabled=false;row.classList.remove('na')}}});$$('.donebox').forEach(d=>{d.onchange=()=>{const i=d.id.replace('done','');const n=$('#na'+i),row=$('#checkrow'+i);if(d.checked){if(n){n.checked=false;n.disabled=true}row.classList.add('done');row.classList.remove('na')}else{if(n)n.disabled=false;row.classList.remove('done')}}});$('#backReg').onclick=()=>{page='reg';render()};$('#generateToken').onclick=generateToken}
 function nextTokenNumber(){let max=0;patients.forEach(p=>{const n=parseInt(String(p.token||'').replace(/\D/g,''),10);if(Number.isFinite(n)&&n>max)max=n});return max+1}
-async function generateToken(){const preChecklist=checklist.map((x,i)=>({name:x.name,done:!!$('#done'+i)?.checked,na:!!$('#na'+i)?.checked}));let n=nextTokenNumber();if(sb){try{const {data,error}=await sb.from('minor_ot_patients').select('token').eq('patient_date',date);if(error)throw error;let cloudMax=0;(data||[]).forEach(row=>{const value=parseInt(String(row.token||'').replace(/\D/g,''),10);if(Number.isFinite(value)&&value>cloudMax)cloudMax=value});n=Math.max(n,cloudMax+1)}catch(e){console.error('Supabase token lookup failed:',e);toast('Cloud token lookup failed; checking local counter')}}else if(db){try{const snap=await db.collection(CLOUD_ROOT).doc(date).collection('patients').get();let cloudMax=0;snap.forEach(doc=>{const value=parseInt(String(doc.id||doc.data().token||'').replace(/\D/g,''),10);if(Number.isFinite(value)&&value>cloudMax)cloudMax=value});const parentRef=db.collection(CLOUD_ROOT).doc(date);await db.runTransaction(async tx=>{const parent=await tx.get(parentRef);const last=Number(parent.exists&&parent.data().lastTokenNumber||0);n=Math.max(n-1,cloudMax,last)+1;tx.set(parentRef,{lastTokenNumber:n},{merge:true})})}catch(e){console.error('Shared token counter failed:',e);toast('Cloud token counter unavailable; using local number')}}const token='OT-'+String(n).padStart(3,'0');const p={...form,token,date,status:'registered',preChecklist,preOpPhoto:prePhoto||'',postOpPhoto:'',otNotes:{diagnosis:form.diagnosis,procedure:form.procedure,site:form.site,findings:'',details:'',hpe:'NA',pusCulture:'NA'},medications:[],advice:[],createdAt:new Date().toISOString()};patients.push(p);saveLocal();cloudSavePatient(p);current=p;page='token';render();toast('Token generated: '+token)}
+async function generateToken(){const preChecklist=checklist.map((x,i)=>({name:x.name,done:!!$('#done'+i)?.checked,na:!!$('#na'+i)?.checked}));let n=nextTokenNumber();if(sbReady){try{const {data,error}=await sb.from('minor_ot_patients').select('token').eq('patient_date',date);if(error)throw error;let cloudMax=0;(data||[]).forEach(row=>{const value=parseInt(String(row.token||'').replace(/\D/g,''),10);if(Number.isFinite(value)&&value>cloudMax)cloudMax=value});n=Math.max(n,cloudMax+1)}catch(e){console.error('Supabase token lookup failed:',e);toast('Cloud token lookup failed; checking local counter')}}else if(db){try{const snap=await db.collection(CLOUD_ROOT).doc(date).collection('patients').get();let cloudMax=0;snap.forEach(doc=>{const value=parseInt(String(doc.id||doc.data().token||'').replace(/\D/g,''),10);if(Number.isFinite(value)&&value>cloudMax)cloudMax=value});const parentRef=db.collection(CLOUD_ROOT).doc(date);await db.runTransaction(async tx=>{const parent=await tx.get(parentRef);const last=Number(parent.exists&&parent.data().lastTokenNumber||0);n=Math.max(n-1,cloudMax,last)+1;tx.set(parentRef,{lastTokenNumber:n},{merge:true})})}catch(e){console.error('Shared token counter failed:',e);toast('Cloud token counter unavailable; using local number')}}const token='OT-'+String(n).padStart(3,'0');const p={...form,token,date,status:'registered',preChecklist,preOpPhoto:prePhoto||'',postOpPhoto:'',otNotes:{diagnosis:form.diagnosis,procedure:form.procedure,site:form.site,findings:'',details:'',hpe:'NA',pusCulture:'NA'},medications:[],advice:[],createdAt:new Date().toISOString()};patients.push(p);saveLocal();cloudSavePatient(p);current=p;page='token';render();toast('Token generated: '+token)}
 function tokenPage(){const p=current;if(!p){page='reg';return regPage()}return `${header()}<section class="card"><div class="ticket"><div class="ticketlabel">MINOR OT TOKEN</div><div class="tokenno">${esc(p.token)}</div><div class="ticketname">${esc(p.name)}</div><div class="ticketmeta">${esc(p.age||'')} / ${esc(p.sex==='F'?'Female':'Male')} · ${esc(p.diagnosis)} · ${esc(p.site)}</div></div><div class="actions"><button class="btn yellow" id="announceToken">🔊 Announce</button><button class="btn primary" id="thermalToken">🖨 Thermal Token</button></div><button class="btn soft full" id="systemToken" style="margin-top:9px">🖨 System Token Print</button><button class="btn soft full" id="newPatient" style="margin-top:9px">+ New Patient</button></section>`}
 function announcePatient(p){if(!('speechSynthesis' in window)){toast('Tamil speech is not supported on this browser');return}const honorific=p.sex==='F'?'திருமதி':'திரு';const token=String(p.token||'').replace(/^OT-/i,'');const text=`டோக்கன் எண் ${token} ${honorific} ${p.name} மைனர் OT க்கு வரவும்`;window.speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(text);u.lang='ta-IN';u.rate=.9;u.pitch=1;window.speechSynthesis.speak(u)}
 let b21Device=null,b21Char=null,b21Busy=false;
