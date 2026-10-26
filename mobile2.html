@@ -7,6 +7,7 @@
 <title>Minor OT Manager</title>
 <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.57.0"></script>
 <style>
 :root{
   --navy:#303247;--yellow:#ffc400;--green:#20c66a;--red:#ee454d;
@@ -110,21 +111,21 @@ button{cursor:pointer;-webkit-tap-highlight-color:transparent}
 <script>
 'use strict';
 
-/* Firebase connection for the existing Minor OT Manager project. */
+
+/* Firebase connection retained as read/migration fallback during sync testing. */
 const firebaseConfig={
-  apiKey:'AIzaSyBhLTBL9j5ynCqLE_-0Bkj-qVY3v3SEz0g',
-  authDomain:'minor-ot-manager.firebaseapp.com',
-  projectId:'minor-ot-manager',
-  storageBucket:'minor-ot-manager.firebasestorage.app',
-  messagingSenderId:'240851011199',
-  appId:'1:240851011199:web:3c3cf35c56751849eb214a'
+ apiKey:'AIzaSyBhLTBL9j5ynCqLE_-0Bkj-qVY3v3SEz0g',
+ authDomain:'minor-ot-manager.firebaseapp.com',
+ projectId:'minor-ot-manager',
+ storageBucket:'minor-ot-manager.firebasestorage.app',
+ messagingSenderId:'240851011199',
+ appId:'1:240851011199:web:3c3cf35c56751849eb214a'
 };
 let db=null;
 try{firebase.initializeApp(firebaseConfig);db=firebase.firestore()}catch(e){console.error('Firebase initialization failed:',e)}
 let cloudUnsubscribe=null;let cloudStatus='Connecting…';const cloudMigrationAttempted=new Set();
 function setCloudStatus(label){cloudStatus=label;const badge=document.getElementById('syncStatus');if(badge){badge.textContent='● '+label;badge.classList.toggle('offline',label==='Offline');badge.classList.toggle('syncing',label==='Syncing…'||label==='Connecting…')}}
 const CLOUD_ROOT='minorOT';
-
 const app=document.getElementById('app');
 const $=s=>document.querySelector(s);
 const $$=s=>Array.from(document.querySelectorAll(s));
@@ -141,38 +142,108 @@ function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&l
 function toast(text){const x=document.createElement('div');x.className='toast';x.textContent=text;document.body.appendChild(x);setTimeout(()=>x.remove(),2600)}
 function loadLocal(){try{const raw=localStorage.getItem(STORAGE_KEY);patients=raw?JSON.parse(raw):[];if(!Array.isArray(patients))patients=[]}catch(e){patients=[];toast('Could not read saved patient data')}}
 function saveLocal(){try{localStorage.setItem(STORAGE_KEY,JSON.stringify(patients));localStorage.setItem(DATE_KEY,date);return true}catch(e){toast('Storage is full. Reduce photo size or clear old data.');return false}}
-async function cloudSavePatient(p){if(!db||!p||!p.token)return;try{await db.collection(CLOUD_ROOT).doc(p.date||date).collection('patients').doc(p.token).set(p,{merge:true});setCloudStatus('Synced')}catch(e){console.error('Firebase save failed:',e);setCloudStatus('Offline')}}
-function cloudLoadDate(){
-  if(cloudUnsubscribe){cloudUnsubscribe();cloudUnsubscribe=null}
-  if(!db){setCloudStatus('Local only');return}
-  const requestedDate=date;setCloudStatus('Connecting…');
-  const parentRef=db.collection(CLOUD_ROOT).doc(requestedDate);
-  const patientsRef=parentRef.collection('patients');
-  cloudUnsubscribe=patientsRef.onSnapshot({includeMetadataChanges:true},async snap=>{
-    if(requestedDate!==date)return;
-    const localForDate=patients.filter(p=>(p.date||'')===requestedDate);
-    const otherDates=patients.filter(p=>(p.date||'')!==requestedDate);
-    const cloud=[];snap.forEach(doc=>cloud.push({id:doc.id,...doc.data()}));
-    if(snap.metadata.fromCache){
-      const merged=new Map(localForDate.map(p=>[p.token,p]));cloud.forEach(p=>merged.set(p.token,p));
-      patients=[...otherDates,...Array.from(merged.values())];saveLocal();setCloudStatus(navigator.onLine?'Syncing…':'Offline');
-    }else if(cloud.length===0&&localForDate.length&&!cloudMigrationAttempted.has(requestedDate)){
-      cloudMigrationAttempted.add(requestedDate);
-      try{
-        const parentSnap=await parentRef.get();const meta=parentSnap.exists?parentSnap.data():{};
-        if(requestedDate!==date)return;
-        if(!meta.clearedAt){setCloudStatus('Syncing…');for(const p of localForDate)await cloudSavePatient(p);return}
-      }catch(e){console.error('Cloud migration check failed:',e);setCloudStatus('Offline');return}
-      patients=[...otherDates];saveLocal();setCloudStatus('Synced');
-    }else{
-      patients=[...otherDates,...cloud];
-      if(current&&current.token){current=cloud.find(p=>p.token===current.token)||current}
-      saveLocal();setCloudStatus('Synced');
-    }
-    if(page==='list'||page==='records')render();
-  },err=>{console.error('Firebase live sync failed:',err);setCloudStatus('Offline')});
+
+/* Supabase-backed synchronization prototype. Firebase is retained as fallback. */
+const SUPABASE_URL='https://pnncnljakqrqzocahxhs.supabase.co';
+const SUPABASE_PUBLISHABLE_KEY='sb_publishable_cga5rEYY_gFG3KZ2Kpvb9g_ZoHKiYJd';
+const sb=(window.supabase&&window.supabase.createClient)
+ ? window.supabase.createClient(SUPABASE_URL,SUPABASE_PUBLISHABLE_KEY,{auth:{persistSession:false,autoRefreshToken:false}})
+ : null;
+let sbChannel=null;let sbReady=false;
+const DEVICE_KEY='minor_ot_device_id_v1';
+let deviceId=localStorage.getItem(DEVICE_KEY);
+if(!deviceId){deviceId=(crypto.randomUUID?crypto.randomUUID():('dev-'+Date.now()+'-'+Math.random().toString(36).slice(2)));localStorage.setItem(DEVICE_KEY,deviceId);}
+function sbRecord(p){return {patient_date:p.date||date,token:String(p.token||''),patient_data:p,updated_at:new Date().toISOString(),device_id:deviceId};}
+async function sbSavePatient(p){
+ if(!sb||!p||!p.token)return false;
+ try{
+  const {error}=await sb.from('minor_ot_patients').upsert(sbRecord(p),{onConflict:'patient_date,token'});
+  if(error)throw error;setCloudStatus('Synced');return true;
+ }catch(e){console.error('Supabase save failed:',e);setCloudStatus('Offline');return false;}
 }
-async function cloudClearDate(targetDate){if(!db)return;try{const parentRef=db.collection(CLOUD_ROOT).doc(targetDate);await parentRef.set({clearedAt:new Date().toISOString()},{merge:true});const ref=parentRef.collection('patients');const snap=await ref.get();for(let i=0;i<snap.docs.length;i+=450){const batch=db.batch();snap.docs.slice(i,i+450).forEach(doc=>batch.delete(doc.ref));await batch.commit()}}catch(e){console.error('Firebase clear failed:',e);setCloudStatus('Offline')}}
+async function sbLoadDate(requestedDate){
+ if(!sb)return false;
+ try{
+  const {data,error}=await sb.from('minor_ot_patients').select('patient_data,updated_at').eq('patient_date',requestedDate).order('updated_at',{ascending:false});
+  if(error)throw error;
+  if(requestedDate!==date)return true;
+  const cloud=(data||[]).map(r=>r.patient_data).filter(Boolean);
+  const localForDate=patients.filter(p=>(p.date||'')===requestedDate);
+  const others=patients.filter(p=>(p.date||'')!==requestedDate);
+  const merged=new Map(cloud.map(p=>[p.token,p]));
+  // Local-only records are uploaded once; matching cloud records stay authoritative.
+  for(const p of localForDate)if(!merged.has(p.token)){merged.set(p.token,p);await sbSavePatient(p);}
+  patients=[...others,...merged.values()];saveLocal();
+  setCloudStatus('Synced');if(page==='list'||page==='records')render();return true;
+ }catch(e){console.error('Supabase load failed:',e);setCloudStatus('Offline');return false;}
+}
+async function sbStartRealtime(){
+ if(!sb)return;
+ if(sbChannel){await sb.removeChannel(sbChannel).catch(()=>{});sbChannel=null;}
+ const subscribedDate=date;
+ sbChannel=sb.channel('minor-ot-live-sync-'+subscribedDate)
+  .on('postgres_changes',{event:'*',schema:'public',table:'minor_ot_patients',filter:'patient_date=eq.'+subscribedDate},async payload=>{
+   if(date!==subscribedDate)return;
+   const changed=payload.new&&payload.new.patient_data;
+   if(changed&&changed.date===subscribedDate){
+    const idx=patients.findIndex(p=>p.token===changed.token&&(p.date||date)===date);
+    if(idx>=0)patients[idx]=changed;else patients.push(changed);
+    saveLocal();if(current&&current.token===changed.token)current=changed;
+    if(page==='list'||page==='records')render();
+   }else if(payload.eventType==='DELETE'){await sbLoadDate(date);}
+  })
+  .subscribe(status=>{if(status==='SUBSCRIBED')setCloudStatus('Synced');else if(status==='CHANNEL_ERROR'||status==='TIMED_OUT'){setCloudStatus('Offline');console.warn('Supabase Realtime status:',status);}});
+}
+async function sbClearDate(targetDate){
+ if(!sb)return false;
+ try{const {error}=await sb.from('minor_ot_patients').delete().eq('patient_date',targetDate);if(error)throw error;setCloudStatus('Synced');return true}
+ catch(e){console.error('Supabase clear failed:',e);setCloudStatus('Offline');return false}
+}
+function cloudSavePatient(p){
+ if(sbReady){
+  syncWriteQueue=syncWriteQueue.then(()=>sbSavePatient(p)).catch(e=>{console.error('Queued Supabase write failed:',e);setCloudStatus('Offline');return false});
+  return syncWriteQueue;
+ }
+ if(!db||!p||!p.token)return Promise.resolve(false);
+ return db.collection(CLOUD_ROOT).doc(p.date||date).collection('patients').doc(p.token).set(p,{merge:true})
+  .then(()=>{setCloudStatus('Synced');return true}).catch(e=>{console.error('Firebase save failed:',e);setCloudStatus('Offline');return false});
+}
+async function cloudLoadDate(){
+ if(cloudUnsubscribe){cloudUnsubscribe();cloudUnsubscribe=null}
+ if(sb){
+  setCloudStatus('Connecting…');
+  if(await sbLoadDate(date)){sbReady=true;await sbStartRealtime();return;}
+  if(sbReady){setCloudStatus('Offline');return;}
+  console.warn('Supabase is not configured yet; keeping the existing Firebase sync active.');
+ }
+ if(!db){setCloudStatus('Local only');return}
+ const requestedDate=date;
+ if(sb){setCloudStatus('Offline');return}
+ setCloudStatus('Connecting…');
+ const parentRef=db.collection(CLOUD_ROOT).doc(requestedDate);
+ const patientsRef=parentRef.collection('patients');
+ cloudUnsubscribe=patientsRef.onSnapshot({includeMetadataChanges:true},async snap=>{
+  if(requestedDate!==date)return;
+  const localForDate=patients.filter(p=>(p.date||'')===requestedDate),otherDates=patients.filter(p=>(p.date||'')!==requestedDate);
+  const cloud=[];snap.forEach(doc=>cloud.push({id:doc.id,...doc.data()}));
+  if(snap.metadata.fromCache){
+   const merged=new Map(localForDate.map(p=>[p.token,p]));cloud.forEach(p=>merged.set(p.token,p));
+   patients=[...otherDates,...merged.values()];saveLocal();setCloudStatus(navigator.onLine?'Syncing…':'Offline');
+  }else if(cloud.length===0&&localForDate.length&&!cloudMigrationAttempted.has(requestedDate)){
+   cloudMigrationAttempted.add(requestedDate);
+   try{const parentSnap=await parentRef.get();const meta=parentSnap.exists?parentSnap.data():{};if(requestedDate!==date)return;if(!meta.clearedAt){setCloudStatus('Syncing…');for(const p of localForDate)await cloudSavePatient(p);return}}
+   catch(e){console.error('Firebase migration check failed:',e);setCloudStatus('Offline');return}
+   patients=[...otherDates];saveLocal();setCloudStatus('Synced');
+  }else{patients=[...otherDates,...cloud];if(current&&current.token)current=cloud.find(p=>p.token===current.token)||current;saveLocal();setCloudStatus('Synced')}
+  if(page==='list'||page==='records')render();
+ },err=>{console.error('Firebase live sync failed:',err);setCloudStatus('Offline')});
+}
+async function cloudClearDate(targetDate){
+ if(sbReady){await sbClearDate(targetDate);return;}
+ if(!db)return;
+ try{const parentRef=db.collection(CLOUD_ROOT).doc(targetDate);await parentRef.set({clearedAt:new Date().toISOString()},{merge:true});const ref=parentRef.collection('patients');const snap=await ref.get();for(let i=0;i<snap.docs.length;i+=450){const batch=db.batch();snap.docs.slice(i,i+450).forEach(doc=>batch.delete(doc.ref));await batch.commit()}}
+ catch(e){console.error('Firebase clear failed:',e);setCloudStatus('Offline')}
+}
 function resetForm(){form={name:'',age:'',sex:'M',opd:'',diagnosis:'',site:'',procedure:'',septic:false};prePhoto='';current=null}
 function photoBlock(id,label){return `<label class="upload">📷 ${label}<input id="${id}" type="file" accept="image/*" capture="environment"></label><div id="${id}_status" class="photo-status"></div>`}
 function compressPhoto(file){return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>{const img=new Image();img.onload=()=>{const max=900;const scale=Math.min(1,max/Math.max(img.width,img.height));const canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(img.width*scale));canvas.height=Math.max(1,Math.round(img.height*scale));canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);resolve(canvas.toDataURL('image/jpeg',.55))};img.onerror=reject;img.src=reader.result};reader.onerror=reject;reader.readAsDataURL(file)})}
@@ -184,7 +255,7 @@ function readForm(){form.name=$('#name').value.trim();form.age=$('#age').value;f
 function safetyPage(){return `${header()}<section class="card"><h2 class="title">Safety Checklist</h2><div class="hint">Choose Done or N/A. They are mutually exclusive.</div><div class="checklist">${checklist.map((x,i)=>`<div class="checkrow" id="checkrow${i}"><label class="checkmain"><input class="donebox" id="done${i}" type="checkbox">${x.name}</label>${x.na?`<label class="na"><input class="nabox" id="na${i}" type="checkbox">Not applicable (N/A)</label>`:''}</div>`).join('')}</div><div style="display:flex;gap:9px;margin-top:15px"><button class="btn soft" id="backReg">Back</button><button class="btn yellow" id="generateToken" style="margin-left:auto">Generate Token</button></div></section>`}
 function bindSafety(){$$('.nabox').forEach(n=>{n.onchange=()=>{const i=n.id.replace('na','');const d=$('#done'+i),row=$('#checkrow'+i);if(n.checked){d.checked=false;d.disabled=true;row.classList.add('na');row.classList.remove('done')}else{d.disabled=false;row.classList.remove('na')}}});$$('.donebox').forEach(d=>{d.onchange=()=>{const i=d.id.replace('done','');const n=$('#na'+i),row=$('#checkrow'+i);if(d.checked){if(n){n.checked=false;n.disabled=true}row.classList.add('done');row.classList.remove('na')}else{if(n)n.disabled=false;row.classList.remove('done')}}});$('#backReg').onclick=()=>{page='reg';render()};$('#generateToken').onclick=generateToken}
 function nextTokenNumber(){let max=0;patients.forEach(p=>{const n=parseInt(String(p.token||'').replace(/\D/g,''),10);if(Number.isFinite(n)&&n>max)max=n});return max+1}
-async function generateToken(){const preChecklist=checklist.map((x,i)=>({name:x.name,done:!!$('#done'+i)?.checked,na:!!$('#na'+i)?.checked}));let n=nextTokenNumber();if(db){try{const snap=await db.collection(CLOUD_ROOT).doc(date).collection('patients').get();let cloudMax=0;snap.forEach(doc=>{const value=parseInt(String(doc.id||doc.data().token||'').replace(/\D/g,''),10);if(Number.isFinite(value)&&value>cloudMax)cloudMax=value});const parentRef=db.collection(CLOUD_ROOT).doc(date);await db.runTransaction(async tx=>{const parent=await tx.get(parentRef);const last=Number(parent.exists&&parent.data().lastTokenNumber||0);n=Math.max(n-1,cloudMax,last)+1;tx.set(parentRef,{lastTokenNumber:n},{merge:true})})}catch(e){console.error('Shared token counter failed:',e);toast('Cloud token counter unavailable; using local number')}}const token='OT-'+String(n).padStart(3,'0');const p={...form,token,date,status:'registered',preChecklist,preOpPhoto:prePhoto||'',postOpPhoto:'',otNotes:{diagnosis:form.diagnosis,procedure:form.procedure,site:form.site,findings:'',details:'',hpe:'NA',pusCulture:'NA'},medications:[],advice:[],createdAt:new Date().toISOString()};patients.push(p);saveLocal();cloudSavePatient(p);current=p;page='token';render();toast('Token generated: '+token)}
+async function generateToken(){const preChecklist=checklist.map((x,i)=>({name:x.name,done:!!$('#done'+i)?.checked,na:!!$('#na'+i)?.checked}));let n=nextTokenNumber();if(sbReady){try{const {data,error}=await sb.from('minor_ot_patients').select('token').eq('patient_date',date);if(error)throw error;let cloudMax=0;(data||[]).forEach(row=>{const value=parseInt(String(row.token||'').replace(/\D/g,''),10);if(Number.isFinite(value)&&value>cloudMax)cloudMax=value});n=Math.max(n,cloudMax+1)}catch(e){console.error('Supabase token lookup failed:',e);toast('Cloud token lookup failed; checking local counter')}}else if(db){try{const snap=await db.collection(CLOUD_ROOT).doc(date).collection('patients').get();let cloudMax=0;snap.forEach(doc=>{const value=parseInt(String(doc.id||doc.data().token||'').replace(/\D/g,''),10);if(Number.isFinite(value)&&value>cloudMax)cloudMax=value});const parentRef=db.collection(CLOUD_ROOT).doc(date);await db.runTransaction(async tx=>{const parent=await tx.get(parentRef);const last=Number(parent.exists&&parent.data().lastTokenNumber||0);n=Math.max(n-1,cloudMax,last)+1;tx.set(parentRef,{lastTokenNumber:n},{merge:true})})}catch(e){console.error('Shared token counter failed:',e);toast('Cloud token counter unavailable; using local number')}}const token='OT-'+String(n).padStart(3,'0');const p={...form,token,date,status:'registered',preChecklist,preOpPhoto:prePhoto||'',postOpPhoto:'',otNotes:{diagnosis:form.diagnosis,procedure:form.procedure,site:form.site,findings:'',details:'',hpe:'NA',pusCulture:'NA'},medications:[],advice:[],createdAt:new Date().toISOString()};patients.push(p);saveLocal();cloudSavePatient(p);current=p;page='token';render();toast('Token generated: '+token)}
 function tokenPage(){const p=current;if(!p){page='reg';return regPage()}return `${header()}<section class="card"><div class="ticket"><div class="ticketlabel">MINOR OT TOKEN</div><div class="tokenno">${esc(p.token)}</div><div class="ticketname">${esc(p.name)}</div><div class="ticketmeta">${esc(p.age||'')} / ${esc(p.sex==='F'?'Female':'Male')} · ${esc(p.diagnosis)} · ${esc(p.site)}</div></div><div class="actions"><button class="btn yellow" id="announceToken">🔊 Announce</button><button class="btn primary" id="thermalToken">🖨 Thermal Token</button></div><button class="btn soft full" id="systemToken" style="margin-top:9px">🖨 System Token Print</button><button class="btn soft full" id="newPatient" style="margin-top:9px">+ New Patient</button></section>`}
 function announcePatient(p){if(!('speechSynthesis' in window)){toast('Tamil speech is not supported on this browser');return}const honorific=p.sex==='F'?'திருமதி':'திரு';const token=String(p.token||'').replace(/^OT-/i,'');const text=`டோக்கன் எண் ${token} ${honorific} ${p.name} மைனர் OT க்கு வரவும்`;window.speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(text);u.lang='ta-IN';u.rate=.9;u.pitch=1;window.speechSynthesis.speak(u)}
 let b21Device=null,b21Char=null,b21Busy=false;
