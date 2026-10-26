@@ -164,26 +164,28 @@ async function sbSavePatient(p){
 async function sbLoadDate(requestedDate){
  if(!sb)return false;
  try{
-  const {data,error}=await sb.from('minor_ot_patients').select('patient_data,updated_at').eq('patient_date',requestedDate).order('updated_at',{ascending:true});
+  const {data,error}=await sb.from('minor_ot_patients').select('patient_data,updated_at').eq('patient_date',requestedDate).order('updated_at',{ascending:false});
   if(error)throw error;
   if(requestedDate!==date)return true;
   const cloud=(data||[]).map(r=>r.patient_data).filter(Boolean);
   const localForDate=patients.filter(p=>(p.date||'')===requestedDate);
   const others=patients.filter(p=>(p.date||'')!==requestedDate);
   const merged=new Map(cloud.map(p=>[p.token,p]));
-  for(const p of localForDate)if(!merged.has(p.token))merged.set(p.token,p);
+  // Local-only records are uploaded once; matching cloud records stay authoritative.
+  for(const p of localForDate)if(!merged.has(p.token)){merged.set(p.token,p);await sbSavePatient(p);}
   patients=[...others,...merged.values()];saveLocal();
-  for(const p of localForDate)if(!cloud.some(q=>q.token===p.token))await sbSavePatient(p);
   setCloudStatus('Synced');if(page==='list'||page==='records')render();return true;
  }catch(e){console.error('Supabase load failed:',e);setCloudStatus('Offline');return false;}
 }
 async function sbStartRealtime(){
  if(!sb)return;
  if(sbChannel){await sb.removeChannel(sbChannel).catch(()=>{});sbChannel=null;}
- sbChannel=sb.channel('minor-ot-live-sync')
-  .on('postgres_changes',{event:'*',schema:'public',table:'minor_ot_patients',filter:'patient_date=eq.'+date},async payload=>{
+ const subscribedDate=date;
+ sbChannel=sb.channel('minor-ot-live-sync-'+subscribedDate)
+  .on('postgres_changes',{event:'*',schema:'public',table:'minor_ot_patients',filter:'patient_date=eq.'+subscribedDate},async payload=>{
+   if(date!==subscribedDate)return;
    const changed=payload.new&&payload.new.patient_data;
-   if(changed&&changed.date===date){
+   if(changed&&changed.date===subscribedDate){
     const idx=patients.findIndex(p=>p.token===changed.token&&(p.date||date)===date);
     if(idx>=0)patients[idx]=changed;else patients.push(changed);
     saveLocal();if(current&&current.token===changed.token)current=changed;
@@ -197,7 +199,6 @@ async function sbClearDate(targetDate){
  try{const {error}=await sb.from('minor_ot_patients').delete().eq('patient_date',targetDate);if(error)throw error;setCloudStatus('Synced');return true}
  catch(e){console.error('Supabase clear failed:',e);setCloudStatus('Offline');return false}
 }
-
 function cloudSavePatient(p){
  if(sb){
   syncWriteQueue=syncWriteQueue.then(()=>sbSavePatient(p)).catch(e=>{console.error('Queued Supabase write failed:',e);setCloudStatus('Offline');return false});
