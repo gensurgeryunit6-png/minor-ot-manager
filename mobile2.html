@@ -141,7 +141,7 @@ function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&l
 function toast(text){const x=document.createElement('div');x.className='toast';x.textContent=text;document.body.appendChild(x);setTimeout(()=>x.remove(),2600)}
 function loadLocal(){try{const raw=localStorage.getItem(STORAGE_KEY);patients=raw?JSON.parse(raw):[];if(!Array.isArray(patients))patients=[]}catch(e){patients=[];toast('Could not read saved patient data')}}
 function saveLocal(){try{localStorage.setItem(STORAGE_KEY,JSON.stringify(patients));localStorage.setItem(DATE_KEY,date);return true}catch(e){toast('Storage is full. Reduce photo size or clear old data.');return false}}
-async function cloudSavePatient(p){if(!db||!p||!p.token)return;try{await db.collection(CLOUD_ROOT).doc(p.date||date).collection('patients').doc(p.token).set(p,{merge:true});setCloudStatus('Synced')}catch(e){console.error('Firebase save failed:',e);setCloudStatus('Offline')}}
+async function cloudSavePatient(p){if(!db||!p||!p.token)return;try{p.updatedAt=new Date().toISOString();saveLocal();await db.collection(CLOUD_ROOT).doc(p.date||date).collection('patients').doc(p.token).set(p,{merge:true});setCloudStatus('Synced')}catch(e){console.error('Firebase save failed:',e);setCloudStatus('Offline')}}
 function cloudLoadDate(){
   if(cloudUnsubscribe){cloudUnsubscribe();cloudUnsubscribe=null}
   if(!db){setCloudStatus('Local only');return}
@@ -153,21 +153,54 @@ function cloudLoadDate(){
     const localForDate=patients.filter(p=>(p.date||'')===requestedDate);
     const otherDates=patients.filter(p=>(p.date||'')!==requestedDate);
     const cloud=[];snap.forEach(doc=>cloud.push({id:doc.id,...doc.data()}));
+    const localByToken=new Map(localForDate.map(p=>[p.token,p]));
     if(snap.metadata.fromCache){
-      const merged=new Map(localForDate.map(p=>[p.token,p]));cloud.forEach(p=>merged.set(p.token,p));
-      patients=[...otherDates,...Array.from(merged.values())];saveLocal();setCloudStatus(navigator.onLine?'Syncing…':'Offline');
+      const merged=new Map(localByToken);
+      cloud.forEach(p=>{
+        const local=merged.get(p.token);
+        const localTime=Date.parse(local?.updatedAt||local?.createdAt||0)||0;
+        const cloudTime=Date.parse(p.updatedAt||p.createdAt||0)||0;
+        if(!local||cloudTime>=localTime)merged.set(p.token,p);
+      });
+      patients=[...otherDates,...Array.from(merged.values())];
+      saveLocal();setCloudStatus(navigator.onLine?'Syncing…':'Offline');
     }else if(cloud.length===0&&localForDate.length&&!cloudMigrationAttempted.has(requestedDate)){
       cloudMigrationAttempted.add(requestedDate);
       try{
         const parentSnap=await parentRef.get();const meta=parentSnap.exists?parentSnap.data():{};
         if(requestedDate!==date)return;
-        if(!meta.clearedAt){setCloudStatus('Syncing…');for(const p of localForDate)await cloudSavePatient(p);return}
+        if(!meta.clearedAt){
+          patients=[...otherDates,...localForDate];saveLocal();setCloudStatus('Syncing…');
+          for(const p of localForDate)await cloudSavePatient(p);
+          return;
+        }
       }catch(e){console.error('Cloud migration check failed:',e);setCloudStatus('Offline');return}
       patients=[...otherDates];saveLocal();setCloudStatus('Synced');
     }else{
-      patients=[...otherDates,...cloud];
-      if(current&&current.token){current=cloud.find(p=>p.token===current.token)||current}
-      saveLocal();setCloudStatus('Synced');
+      const cloudByToken=new Map(cloud.map(p=>[p.token,p]));
+      const merged=new Map();
+      const uploads=[];
+      localForDate.forEach(local=>{
+        const remote=cloudByToken.get(local.token);
+        if(!remote){merged.set(local.token,local);uploads.push(local);return}
+        const localTime=Date.parse(local.updatedAt||local.createdAt||0)||0;
+        const cloudTime=Date.parse(remote.updatedAt||remote.createdAt||0)||0;
+        if(localTime>cloudTime){merged.set(local.token,local);uploads.push(local)}
+        else merged.set(local.token,remote);
+      });
+      cloud.forEach(remote=>{if(!merged.has(remote.token))merged.set(remote.token,remote)});
+      patients=[...otherDates,...Array.from(merged.values())];
+      if(current&&current.token)current=merged.get(current.token)||current;
+      saveLocal();
+      if(page==='list'||page==='records')render();
+      try{
+        for(const p of uploads){
+          if(requestedDate!==date)return;
+          await cloudSavePatient(p);
+        }
+        setCloudStatus('Synced');
+      }catch(e){console.error('Pending local sync failed:',e);setCloudStatus('Offline')}
+      return;
     }
     if(page==='list'||page==='records')render();
   },err=>{console.error('Firebase live sync failed:',err);setCloudStatus('Offline')});
@@ -192,7 +225,7 @@ const B21_SERVICE='0000ae30-0000-1000-8000-00805f9b34fb';const B21_TX='0000ae01-
 function crc8(data){let c=0;for(const v of data){c^=v;for(let i=0;i<8;i++)c=(c&0x80)?((c<<1)^0x07)&255:(c<<1)&255}return c}
 function packet(cmd,data=[]){return new Uint8Array([0x51,0x78,cmd,0x00,data.length&255,(data.length>>8)&255,...data,crc8(data),0xff])}
 function sleep(ms){return new Promise(r=>setTimeout(r,ms))}
-function renderThermalRows(lines){const W=384,rows=[];for(let i=0;i<lines.length;i++){const isToken=i===0,isFooter=i===lines.length-1,fontSize=isToken?80:(isFooter?9:18),font=`900 ${fontSize}px Arial`;const canvas=document.createElement('canvas');canvas.width=W;canvas.height=isToken?100:(isFooter?18:28);const ctx=canvas.getContext('2d',{willReadFrequently:true});ctx.clearRect(0,0,W,canvas.height);ctx.fillStyle='#fff';ctx.fillRect(0,0,W,canvas.height);ctx.fillStyle='#000';ctx.font=font;ctx.textAlign='center';ctx.textBaseline='alphabetic';const metrics=ctx.measureText(String(lines[i]));const ascent=Math.ceil(metrics.actualBoundingBoxAscent||fontSize*.8),descent=Math.ceil(metrics.actualBoundingBoxDescent||fontSize*.2);const baseline=Math.max(ascent+2,Math.ceil((canvas.height+ascent-descent)/2));ctx.fillText(String(lines[i]),W/2,baseline);const pixels=ctx.getImageData(0,0,W,canvas.height).data;let first=-1,last=-1;for(let y=0;y<canvas.height;y++){let ink=false;for(let x=0;x<W;x++){if(pixels[(y*W+x)*4]<160){ink=true;break}}if(ink){if(first<0)first=y;last=y}}if(first<0)continue;for(let y=first;y<=last;y++){const row=new Uint8Array(48);for(let x=0;x<W;x++)if(pixels[(y*W+x)*4]<160)row[x>>3]|=1<<(x&7);rows.push(row)}}return rows}
+function renderThermalRows(lines){const W=384,rows=[];for(let i=0;i<lines.length;i++){const isToken=i===0,isFooter=i===lines.length-1,fontSize=isToken?80:(isFooter?9:30),font=`900 ${fontSize}px Arial`;const canvas=document.createElement('canvas');canvas.width=W;canvas.height=isToken?100:(isFooter?18:42);const ctx=canvas.getContext('2d',{willReadFrequently:true});ctx.clearRect(0,0,W,canvas.height);ctx.fillStyle='#fff';ctx.fillRect(0,0,W,canvas.height);ctx.fillStyle='#000';ctx.font=font;ctx.textAlign='center';ctx.textBaseline='alphabetic';const metrics=ctx.measureText(String(lines[i]));const ascent=Math.ceil(metrics.actualBoundingBoxAscent||fontSize*.8),descent=Math.ceil(metrics.actualBoundingBoxDescent||fontSize*.2);const baseline=Math.max(ascent+2,Math.ceil((canvas.height+ascent-descent)/2));ctx.fillText(String(lines[i]),W/2,baseline);const pixels=ctx.getImageData(0,0,W,canvas.height).data;let first=-1,last=-1;for(let y=0;y<canvas.height;y++){let ink=false;for(let x=0;x<W;x++){if(pixels[(y*W+x)*4]<245){ink=true;break}}if(ink){if(first<0)first=y;last=y}}if(first<0)continue;for(let y=first;y<=last;y++){const row=new Uint8Array(48);for(let x=0;x<W;x++)if(pixels[(y*W+x)*4]<245)row[x>>3]|=1<<(x&7);rows.push(row)}}return rows}
 async function writeChunks(bytes){for(let i=0;i<bytes.length;i+=120){const chunk=bytes.slice(i,i+120);if(b21Char.properties.writeWithoutResponse&&b21Char.writeValueWithoutResponse)await b21Char.writeValueWithoutResponse(chunk);else await b21Char.writeValue(chunk);await sleep(25)}}
 async function startThermalPrintFromClick(token){if(b21Busy)return;b21Busy=true;try{if(!navigator.bluetooth)throw new Error('Web Bluetooth is not available. Use Chrome on Android.');const device=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:[B21_SERVICE,'0000ff00-0000-1000-8000-00805f9b34fb','000018f0-0000-1000-8000-00805f9b34fb']});b21Device=device;const server=await device.gatt.connect();let services=[];try{services=await server.getPrimaryServices()}catch(e){}b21Char=null;for(const service of services){const chars=await service.getCharacteristics().catch(()=>[]);const exact=chars.find(c=>c.uuid.toLowerCase()===B21_TX&&(c.properties.write||c.properties.writeWithoutResponse));if(exact){b21Char=exact;break}}if(!b21Char)for(const service of services){const chars=await service.getCharacteristics().catch(()=>[]);const writable=chars.find(c=>c.properties.write||c.properties.writeWithoutResponse);if(writable){b21Char=writable;break}}if(!b21Char)throw new Error('No writable printer channel found.');await writeChunks(packet(0xA3,[0]));await writeChunks(packet(0xA4,[0x32]));await writeChunks(packet(0xAF,[0xFF,0xFF]));await writeChunks(packet(0xBE,[0x01]));const patient=patients.find(x=>x.token===token)||current||{};const diagnosis=patient.diagnosis||patient.otNotes?.diagnosis||'';const details=[String(token),`Name: ${patient.name||'-'}`,`Age: ${patient.age||'-'}`,`Sex: ${patient.sex==='F'?'Female':'Male'}`,`Diagnosis: ${diagnosis||'-'}`,'IGMC&RI - Department of Surgery'];for(const row of renderThermalRows(details))await writeChunks(packet(0xA2,[...row]));await writeChunks(packet(0xBD,[25]));await writeChunks(packet(0xA1,[0x30,0x00]));await writeChunks(packet(0xA1,[0x30,0x00]));await writeChunks(packet(0xA1,[0x30,0x00]));await sleep(100);toast('SEZNIK B21: token sent')}catch(e){toast('Thermal printing failed: '+(e?.message||'Unknown error'))}finally{b21Busy=false}}
 function advanceStatus(p){const next={registered:'ready',ready:'progress',progress:'completed',completed:'completed'}[p.status]||'registered';p.status=next;saveLocal();cloudSavePatient(p);toast(next==='completed'?'Patient marked Done':'Status: '+statusLabel(next));render()}
@@ -210,6 +243,8 @@ function render(){loadLocal();if(page==='reg')app.innerHTML=regPage();else if(pa
 window.addEventListener('afterprint',()=>{const s=$('#printSheet');if(s)s.remove()});
 /* No SpeechRecognition. No microphone buttons. */
 render();cloudLoadDate();
+window.addEventListener('online',()=>{setCloudStatus('Syncing…');cloudLoadDate()});
+window.addEventListener('offline',()=>setCloudStatus('Offline'));
 </script>
 </body>
 </html>
